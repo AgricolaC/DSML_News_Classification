@@ -33,22 +33,23 @@ cd DSML_News_Classification
 
 You can install the required packages using `pip` or `poetry`. Poetry was used by the authors due to its superior dependency management and virtual environment capabilities. It is also highly recommended to the users & reviewers of this repository. 
 
-**Using pip:**
+**a. Using pip:**
 ```bash
 pip install pandas numpy matplotlib seaborn scikit-learn jupyter
 ```
 
-**Using Poetry:**
+**b. Using Poetry:**
 ```bash
 poetry install
 ```
 
-### 4. ⚠️ CRITICAL: Data Setup
+### 4. Dataset
 
 The dataset is too large to be hosted on GitHub. You must add it manually:
 
 1. Create a folder named `dataset` in the root directory.
-2. Place your `development.csv` and `evaluation.csv` files inside it.
+2. A download link to the datasets can be found in "guidelines/DSML Project Assignment.pdf". Download it from the link
+3. Place the downloaded `development.csv` and `evaluation.csv` files inside it. They represent our training and test samples, respectively.
 
 ## 🏃‍♂️ How to Run
 
@@ -61,8 +62,6 @@ The dataset is too large to be hosted on GitHub. You must add it manually:
 4.  Run all cells to execute the Exploratory Data Analysis, Preprocessing, Model Training & Final Submission steps.
 
 ## 🧠 Model Architecture
-
-The approach focuses on a robust, interpretability-first model:
 
 *   **Text Preprocessing**: Minimal cleaning strategy (preserving high-signal artifacts like HTML tags and specific URL patterns).
 *   **Vectorization**: TF-IDF (Term Frequency-Inverse Document Frequency) with n-grams (1-3).
