@@ -1,0 +1,278 @@
+import pandas as pd
+import numpy as np
+import re
+from bs4 import BeautifulSoup
+import ftfy
+import nltk
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+from sklearn.base import BaseEstimator, TransformerMixin
+
+try:
+    nltk.data.find('corpora/stopwords')
+    nltk.data.find('corpora/wordnet')
+    nltk.data.find('corpora/omw-1.4')
+except LookupError:
+    nltk.download('stopwords', quiet=True)
+    nltk.download('wordnet', quiet=True)
+    nltk.download('omw-1.4', quiet=True)
+
+class DatasetCleaner(BaseEstimator, TransformerMixin):
+    """
+    Handles mechanical cleaning and standardization of raw dataset columns.
+    
+    Parameters:
+    ----------
+    text_cols : list of str, default=['source', 'title', 'article']
+        List of columns containing text data to clean (strip whitespace, remove artifacts).
+    date_col : str, default='timestamp'
+        Name of the column containing timestamp data to be coerced to datetime.
+    rank_col : str, default='page_rank'
+        Name of the column containing PageRank data to be coerced to numeric.
+    verbose : bool, default=False
+        If True, prints a report of uncovered missing values after cleaning.
+    """
+    def __init__(self, text_cols=['source', 'title', 'article'], 
+                 date_col='timestamp', rank_col='page_rank', verbose=False):
+        self.text_cols = text_cols
+        self.date_col = date_col
+        self.rank_col = rank_col
+        self.artifacts = ['\\N', '\\', 'nan', 'NULL', '']
+        self.verbose = verbose
+
+    def fit(self, X, y=None):
+        return self 
+
+    def transform(self, X):
+        X = X.copy()
+        
+        if self.verbose:
+            before_stats = X[self.text_cols + [self.date_col, self.rank_col]].isnull().sum()
+            print("-" * 40)
+            print("[DatasetCleaner] Starting Cleaning Process...")
+        
+        for col in self.text_cols:
+            if col in X.columns:
+                X[col] = X[col].astype(str).str.strip()
+                X[col] = X[col].replace(self.artifacts, np.nan)
+                X[col] = X[col].replace('', np.nan)
+
+        if self.date_col in X.columns:
+            X[self.date_col] = pd.to_datetime(X[self.date_col], errors='coerce')
+
+        if self.rank_col in X.columns:
+            X[self.rank_col] = pd.to_numeric(X[self.rank_col], errors='coerce')
+
+        if self.verbose:
+            after_stats = X[self.text_cols + [self.date_col, self.rank_col]].isnull().sum()
+            summary = pd.DataFrame({
+                'Missing (Raw)': before_stats,
+                'Missing (Clean)': after_stats,
+                'Uncovered': after_stats - before_stats
+            })
+            display_mask = (summary['Missing (Clean)'] > 0) | (summary['Uncovered'] > 0)
+            
+            print(f"[DatasetCleaner] Report: Uncovered {summary['Uncovered'].sum()} hidden missing values.")
+            if display_mask.any():
+                print(summary[display_mask])
+            else:
+                print("No missing values found.")
+            print("-" * 40)
+        return X
+
+
+class DatasetDeduplicator(BaseEstimator, TransformerMixin):
+    """
+    Handles duplicate removal with configurable strategies for ablation studies.
+    
+    Parameters:
+    ----------
+    mode : {'advanced', 'simple', 'none'}, default='advanced'
+        - 'none': Retains all duplicates (Base case).
+        - 'simple': Drops content duplicates based on file order (Naïve approach).
+        - 'advanced': Prioritizes specific labels over generic ones, resolves conflicts, 
+                      and keeps earliest timestamps (Smart approach).
+    verbose : bool, default=True
+        If True, prints statistics about dropped rows.
+    """
+    def __init__(self, mode='advanced', verbose=True):
+        self.mode = mode
+        self.verbose = verbose
+        self.content_cols = ['title', 'article', 'source']
+        
+        # Validate mode
+        valid_modes = ['advanced', 'simple', 'none']
+        if mode not in valid_modes:
+            raise ValueError(f"Invalid mode '{mode}'. Expected one of {valid_modes}")
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+        initial_count = len(X)
+        
+        # Mode 1: No Deduplication
+        if self.mode == 'none':
+            if self.verbose:
+                print("[DatasetDeduplicator] Mode='none': No rows removed.")
+            return X
+            
+        # Mode 2: Simple Deduplication
+        # just keep the first occurrence found in the file.
+        if self.mode == 'simple':
+            X = X.drop_duplicates(subset=self.content_cols, keep='first')
+            if self.verbose:
+                print(f"[DatasetDeduplicator] Mode='simple': Removed {initial_count - len(X)} rows based on file order.")
+            return X
+
+        # Mode 3: Advanced Deduplication
+        # Custom logic: Specific > Generic, Conflict Resolution, Time sort.
+        if self.mode == 'advanced':
+            if 'label' not in X.columns:
+                if self.verbose:
+                    print("[DatasetDeduplicator] No 'label' column found. Skipping deduplication")
+                return X
+            
+            # Sort Priority (Specific Label > Generic Label > Timestamp)
+            X['is_generic_label'] = (X['label'] == 5)
+            X = X.sort_values(
+                by=['title', 'is_generic_label', 'timestamp'], 
+                ascending=[True, True, True]
+            )
+            
+            has_specific_label_mask = X['label'] != 5
+            rows_with_specific_labels = X[has_specific_label_mask]
+            
+            label_counts = rows_with_specific_labels.groupby(self.content_cols)['label'].nunique()
+            content_with_contradictions = label_counts[label_counts > 1].index
+        
+            if len(content_with_contradictions) > 0:
+                if self.verbose:
+                    print(f"[DatasetDeduplicator] Dropping {len(content_with_contradictions)} articles with impossible label conflicts.")
+                X = X.set_index(self.content_cols).drop(index=content_with_contradictions).reset_index()    
+            
+            # Final Deduplication
+            X = X.drop_duplicates(subset=self.content_cols, keep='first')
+            X = X.drop(columns=['is_generic_label'])
+
+            if self.verbose:
+                print(f"[DatasetDeduplicator] Mode='advanced': Removed {initial_count - len(X)} rows total.")
+                
+            return X
+
+class FeatureExtractor(BaseEstimator, TransformerMixin):
+    """
+    Constructs the primary text feature used for classification.
+    
+    Combines 'source', 'title', and 'article' into a single 'final_text' column.
+    """
+    def __init__(self):
+        pass
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+        # Fill NaNs with empty string before concatenation
+        X['source'] = X['source'].fillna('')
+        X['title'] = X['title'].fillna('')
+        X['article'] = X['article'].fillna('')
+        
+        X['final_text'] = X['source'] + " " + X['title'] + " " + X['article']
+        return X
+
+class TimeExtractor(BaseEstimator, TransformerMixin):
+    """
+    Extracts cyclical temporal features from a timestamp column.
+    
+    Parameters:
+    ----------
+    date_col : str, default='timestamp'
+        Name of the timestamp column to extract features from.
+    """
+    def __init__(self, date_col='timestamp'):
+        self.date_col = date_col
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+        
+        # Ensure it is datetime
+        dates = pd.to_datetime(X[self.date_col], errors='coerce')
+        
+        # Hour
+        hours = dates.dt.hour
+        X['hour_sin'] = np.sin(2 * np.pi * hours / 24)
+        X['hour_cos'] = np.cos(2 * np.pi * hours / 24)
+
+        # Day of Week (0=Monday, 6=Sunday)
+        dow = dates.dt.dayofweek
+        X['day_sin'] = np.sin(2 * np.pi * dow / 7)
+        X['day_cos'] = np.cos(2 * np.pi * dow / 7)
+
+        # Month
+        month = dates.dt.month
+        X['month_sin'] = np.sin(2 * np.pi * month / 12)
+        X['month_cos'] = np.cos(2 * np.pi * month / 12)
+
+        valid_mask = dates.notna()
+        
+        cols_to_fill = ['hour_sin', 'hour_cos', 'day_sin', 'day_cos', 'month_sin', 'month_cos']
+        X[cols_to_fill] = X[cols_to_fill].fillna(0)
+
+        X = X.drop(columns=[self.date_col])
+        return X
+
+class AdvancedTextCleaner(BaseEstimator, TransformerMixin):
+    """
+    Performs text cleaning and normalization.
+    
+    Parameters:
+    ----------
+    text_col : str, default='final_text'
+        Name of the column containing text to clean.
+    verbose : bool, default=False
+        If True, prints progress of the cleaning operation.
+    """
+    def __init__(self, text_col='final_text', verbose=False):
+        self.text_col = text_col
+        self.verbose = verbose
+        self.lemmatizer = WordNetLemmatizer()
+        self.stop_words = set(stopwords.words('english'))
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+        if self.text_col in X.columns:
+            if self.verbose:
+                print("[AdvancedTextCleaner] Starting text cleaning...")
+            X[self.text_col] = X[self.text_col].astype(str).apply(self._clean_text)
+            if self.verbose:
+                print(f"[AdvancedTextCleaner] Finished cleaning {len(X)} rows.")
+        return X
+
+    def _clean_text(self, text):
+        try:
+            # Check if looks like HTML? parsing every row might be slow but necessary.
+            if "<" in text and ">" in text:
+                soup = BeautifulSoup(text, "html.parser")
+                text = soup.get_text(separator=" ")
+        except Exception:
+            pass
+
+        text = ftfy.fix_text(text)
+        text = text.lower()
+        
+        text = re.sub(r'[^a-zA-Z\s]', '', text)
+        
+        # Tokenize first
+        tokens = text.split()
+        tokens = [self.lemmatizer.lemmatize(token) for token in tokens]
+        
+        return " ".join(tokens)
