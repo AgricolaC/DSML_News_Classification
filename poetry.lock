@@ -828,6 +828,21 @@ files = [
 ]
 
 [[package]]
+name = "ftfy"
+version = "6.3.1"
+description = "Fixes mojibake and other problems with Unicode, after the fact"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "ftfy-6.3.1-py3-none-any.whl", hash = "sha256:7c70eb532015cd2f9adb53f101fb6c7945988d023a085d127d1573dc49dd0083"},
+    {file = "ftfy-6.3.1.tar.gz", hash = "sha256:9b3c3d90f84fb267fe64d375a07b7f8912d817cf86009ae134aa03e1819506ec"},
+]
+
+[package.dependencies]
+wcwidth = "*"
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 description = "A pure-Python, bring-your-own-I/O implementation of HTTP/1.1"
@@ -3589,4 +3604,4 @@ scikit-learn = ["scikit-learn"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.14"
-content-hash = "ee3057934b31c4f54f2f5305aded2c231903135b9e19acc658245ec12a9b4b18"
+content-hash = "c97901dc08348fc94907b27ac324c2c221d59d4e9bf3c9d92356c156bfcddeec"
