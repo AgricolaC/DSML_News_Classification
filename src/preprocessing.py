@@ -19,7 +19,7 @@ except LookupError:
 
 class DatasetCleaner(BaseEstimator, TransformerMixin):
     """
-    Handles mechanical cleaning and standardization of raw dataset columns.
+    Handles cleaning and standardization of raw dataset columns.
     
     Parameters:
     ----------
@@ -53,9 +53,9 @@ class DatasetCleaner(BaseEstimator, TransformerMixin):
         
         for col in self.text_cols:
             if col in X.columns:
-                X[col] = X[col].astype(str).str.strip()
                 X[col] = X[col].replace(self.artifacts, np.nan)
                 X[col] = X[col].replace('', np.nan)
+                X[col] = X[col].apply(lambda x: ftfy.fix_text(str(x)) if pd.notna(x) else x).str.strip()
 
         if self.date_col in X.columns:
             X[self.date_col] = pd.to_datetime(X[self.date_col], errors='coerce')
@@ -180,8 +180,17 @@ class FeatureExtractor(BaseEstimator, TransformerMixin):
         X['title'] = X['title'].fillna('')
         X['article'] = X['article'].fillna('')
         
-        X['final_text'] = X['source'] + " " + X['title'] + " " + X['article']
+        source_tokens = X['source'].apply(self._tokenize_source)
+        
+        X['final_text'] = source_tokens + " " + X['title'] + " " + X['article']
         return X
+
+    def _tokenize_source(self, text):
+        if not text:
+            return "src_Unknown"
+        # Remove special chars to make a single token
+        clean = re.sub(r'[^a-zA-Z0-9]', '', str(text))
+        return f"src_{clean}"
 
 class TimeExtractor(BaseEstimator, TransformerMixin):
     """
@@ -214,6 +223,14 @@ class TimeExtractor(BaseEstimator, TransformerMixin):
         X['day_sin'] = np.sin(2 * np.pi * dow / 7)
         X['day_cos'] = np.cos(2 * np.pi * dow / 7)
 
+        # Helper for missing dates
+        X['is_missing_date'] = dates.isna().astype(int)
+
+        # Week (1-53)
+        week = dates.dt.isocalendar().week.astype(float)
+        X['week_sin'] = np.sin(2 * np.pi * week / 53)
+        X['week_cos'] = np.cos(2 * np.pi * week / 53)
+
         # Month
         month = dates.dt.month
         X['month_sin'] = np.sin(2 * np.pi * month / 12)
@@ -221,7 +238,7 @@ class TimeExtractor(BaseEstimator, TransformerMixin):
 
         valid_mask = dates.notna()
         
-        cols_to_fill = ['hour_sin', 'hour_cos', 'day_sin', 'day_cos', 'month_sin', 'month_cos']
+        cols_to_fill = ['hour_sin', 'hour_cos', 'day_sin', 'day_cos', 'month_sin', 'month_cos', 'week_sin', 'week_cos']
         X[cols_to_fill] = X[cols_to_fill].fillna(0)
 
         X = X.drop(columns=[self.date_col])
@@ -276,3 +293,74 @@ class AdvancedTextCleaner(BaseEstimator, TransformerMixin):
         tokens = [self.lemmatizer.lemmatize(token) for token in tokens]
         
         return " ".join(tokens)
+
+class PageRankOneHot(BaseEstimator, TransformerMixin):
+    """
+    One-Hot encodes the PageRank column (1-5), treating it as categorical.
+    """
+    def __init__(self, rank_col='page_rank'):
+        self.rank_col = rank_col
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+        # Ensure numeric first (handled by DatasetCleaner, but safe to double check)
+        ranks = pd.to_numeric(X[self.rank_col], errors='coerce').fillna(0).astype(int)
+        
+        # Create Dummy Columns for ranks 1-5
+        # We process manually to ensure all columns exist even if a rank is missing in a specific batch
+        for r in range(1, 6):
+            X[f'rank_{r}'] = (ranks == r).astype(int)
+            
+        # (Rank 0/NaN becomes all zeros)
+        if self.rank_col in X.columns:
+            X = X.drop(columns=[self.rank_col])
+            
+        return X
+
+class SourceTransformer(BaseEstimator, TransformerMixin):
+    """
+    Encodes 'source' column:
+    - Keeps top K frequent sources.
+    - Hashes or marks others as 'Other'.
+    - Returns OHE columns.
+    """
+    def __init__(self, top_k=200):
+        self.top_k = top_k
+        self.top_sources_ = None
+
+    def fit(self, X, y=None):
+        if 'source' in X.columns:
+            # Calculate top K sources
+            counts = X['source'].value_counts()
+            self.top_sources_ = counts.index[:self.top_k].tolist()
+        else:
+            self.top_sources_ = []
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+        if 'source' not in X.columns:
+            return X
+            
+        # Mask everything else as 'Other'
+        X['source_clean'] = X['source'].where(X['source'].isin(self.top_sources_), 'Other')
+        
+        # One-Hot Encode
+        dummies = pd.get_dummies(X['source_clean'], prefix='src')
+        
+        # Ensure we have consistent columns (align with fitted top_sources + Other)
+        expected_cols = [f'src_{s}' for s in self.top_sources_] + ['src_Other']
+        
+        for col in expected_cols:
+            if col not in dummies.columns:
+                dummies[col] = 0
+                
+        # Filter to only expected columns to avoid train/test mismatch
+        dummies = dummies[expected_cols]
+        
+        X = pd.concat([X, dummies], axis=1)
+        X = X.drop(columns=['source', 'source_clean'])
+        return X
