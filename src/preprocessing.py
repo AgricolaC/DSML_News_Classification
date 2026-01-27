@@ -175,21 +175,26 @@ class FeatureExtractor(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         X = X.copy()
-        # Fill NaNs with empty string before concatenation
-        X['source'] = X['source'].fillna('')
-        X['title'] = X['title'].fillna('')
-        X['article'] = X['article'].fillna('')
         
+        # 1. Source Tokenization (Lowercase, Unknown handling)
+        X['source'] = X['source'].fillna('')
         source_tokens = X['source'].apply(self._tokenize_source)
         
+        # 2. Handle Text Missingness with explicit tokens
+        X['title'] = X['title'].fillna('title_unknown').replace('', 'title_unknown')
+        X['article'] = X['article'].fillna('article_unknown').replace('', 'article_unknown')
+        
+        # 3. Concatenate
         X['final_text'] = source_tokens + " " + X['title'] + " " + X['article']
         return X
 
     def _tokenize_source(self, text):
         if not text:
-            return "src_Unknown"
-        # Remove special chars to make a single token
-        clean = re.sub(r'[^a-zA-Z0-9]', '', str(text))
+            return "src_unknown"
+        # Standardize: Lowercase + Alphanumeric
+        clean = re.sub(r'[^a-z0-9]', '', str(text).lower())
+        if not clean:
+            return "src_unknown"
         return f"src_{clean}"
 
 class TimeExtractor(BaseEstimator, TransformerMixin):
@@ -258,8 +263,6 @@ class AdvancedTextCleaner(BaseEstimator, TransformerMixin):
     def __init__(self, text_col='final_text', verbose=False):
         self.text_col = text_col
         self.verbose = verbose
-        self.lemmatizer = WordNetLemmatizer()
-        self.stop_words = set(stopwords.words('english'))
 
     def fit(self, X, y=None):
         return self
@@ -268,31 +271,26 @@ class AdvancedTextCleaner(BaseEstimator, TransformerMixin):
         X = X.copy()
         if self.text_col in X.columns:
             if self.verbose:
-                print("[AdvancedTextCleaner] Starting text cleaning...")
+                print("[AdvancedTextCleaner] Starting text cleaning (URL Extraction + HTML Strip)...")
             X[self.text_col] = X[self.text_col].astype(str).apply(self._clean_text)
-            if self.verbose:
-                print(f"[AdvancedTextCleaner] Finished cleaning {len(X)} rows.")
         return X
 
     def _clean_text(self, text):
-        try:
-            # Check if looks like HTML? parsing every row might be slow but necessary.
-            if "<" in text and ">" in text:
-                soup = BeautifulSoup(text, "html.parser")
-                text = soup.get_text(separator=" ")
-        except Exception:
-            pass
-
-        text = ftfy.fix_text(text)
-        text = text.lower()
+        if pd.isna(text): return ""
+        text = str(text)
         
-        text = re.sub(r'[^a-zA-Z\s]', '', text)
+        # 1. Extract URLs to keep the fingerprint
+        urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
         
-        # Tokenize first
-        tokens = text.split()
-        tokens = [self.lemmatizer.lemmatize(token) for token in tokens]
+        # 2. Strip HTML Tags completely
+        clean_text = re.sub(r'<[^>]+>', ' ', text)
         
-        return " ".join(tokens)
+        # 3. Append extracted URLs to the end
+        final_content = clean_text + " " + " ".join(urls)
+        
+        # 4. Normalize Whitespace and fix safe text
+        final_content = ftfy.fix_text(final_content)
+        return re.sub(r'\s+', ' ', final_content).strip()
 
 class PageRankOneHot(BaseEstimator, TransformerMixin):
     """
@@ -327,7 +325,7 @@ class SourceTransformer(BaseEstimator, TransformerMixin):
     - Hashes or marks others as 'Other'.
     - Returns OHE columns.
     """
-    def __init__(self, top_k=200):
+    def __init__(self, top_k=300):
         self.top_k = top_k
         self.top_sources_ = None
 

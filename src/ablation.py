@@ -1,151 +1,174 @@
 import pandas as pd
 import numpy as np
+import warnings
 from sklearn.pipeline import Pipeline
-from sklearn.compose import ColumnTransformer
+from sklearn.compose import ColumnTransformer, make_column_selector
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.svm import LinearSVC
-from sklearn.naive_bayes import ComplementNB
-from sklearn.dummy import DummyClassifier
+from sklearn.naive_bayes import MultinomialNB, ComplementNB
 from sklearn.model_selection import StratifiedKFold, cross_val_score
-from src.preprocessing import DatasetCleaner, DatasetDeduplicator, FeatureExtractor, TimeExtractor, AdvancedTextCleaner
+from sklearn.exceptions import ConvergenceWarning
+
+# Import Preprocessing
+from src.preprocessing import (
+    DatasetCleaner, DatasetDeduplicator, FeatureExtractor, 
+    TimeExtractor, PageRankOneHot, SourceTransformer, AdvancedTextCleaner
+)
 from src.cv_utils import AnchoredTimeSeriesSplit
 from src.seed import set_global_seed
 
-def get_svc():
-    return LinearSVC(C=0.1, class_weight='balanced', random_state=42, dual=False)
+# Suppress warnings for cleaner output
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
 
-def evaluate(pipeline, X, y, name):
-    print(f"\nrunning config: {name}")
-    
-    # 1. Standard Stratified K-Fold
-    cv_strat = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
-    scores_strat = cross_val_score(pipeline, X, y, cv=cv_strat, scoring='f1_macro', n_jobs=-1)
-    mean_strat = np.mean(scores_strat)
-    
-    # 2. Anchored Time Series Split
-    # Requires X to be DataFrame with 'timestamp'
-    try:
-        cv_anchor = AnchoredTimeSeriesSplit(X, n_splits=3)
-        scores_anchor = cross_val_score(pipeline, X, y, cv=cv_anchor, scoring='f1_macro', n_jobs=-1)
-        mean_anchor = np.mean(scores_anchor)
-    except Exception as e:
-        print(f"  [Anchored CV Failed]: {e}")
-        mean_anchor = 0.0
+def get_models():
+    """Returns the 3 classifiers to test."""
+    return {
+        'LinearSVC': LinearSVC(C=0.1, class_weight='balanced', random_state=42, dual=False),
+        'MultinomialNB': MultinomialNB(alpha=0.1),
+        'ComplementNB': ComplementNB(alpha=0.1)
+    }
 
-    print(f"  -> Stratified: {mean_strat:.4f} | Anchored: {mean_anchor:.4f} | Delta: {mean_anchor - mean_strat:.4f}")
-
-def make_text_pipeline(clf):
+def get_pipeline(model_name, model, feature_set='text_only'):
     """
-    Wraps Tfidf+Clf in a ColumnTransformer that selects 'final_text' 
-    and drops everything else (like timestamp).
+    Constructs the pipeline based on the model and feature set availability.
+    NB models cannot handle negative values (Time Features).
     """
-    preprocessor = ColumnTransformer(
-        transformers=[
-            ('tfidf', TfidfVectorizer(), 'final_text')
-        ],
-        remainder='drop'
-    )
+    tfidf = TfidfVectorizer(ngram_range=(1, 3), min_df=2, sublinear_tf=True, lowercase=True)
+    
+    if feature_set == 'text_only':
+        # Simple TF-IDF on 'final_text'
+        preprocessor = ColumnTransformer(
+            transformers=[('tfidf', tfidf, 'final_text')],
+            remainder='drop'
+        )
+    elif feature_set == 'all_features':
+        # Text + Dense
+        # Handling Negative Values for NB
+        if model_name in ['MultinomialNB', 'ComplementNB']:
+            # NB: Exclude Time (sin/cos) features which are negative
+            # Select only Text + OHE (Rank/Source/Missing Flags)
+            # Regex: is_missing_, rank_, src_
+            pattern = r'^(?:is_missing_|rank_|src_).*'
+            preprocessor = ColumnTransformer(
+                transformers=[
+                    ('tfidf', tfidf, 'final_text'),
+                    ('dense', 'passthrough', make_column_selector(pattern=pattern))
+                ],
+                remainder='drop'
+            )
+        else:
+            # SVC: Full Features (Time included)
+            # Regex: hour_, day_, month_, week_, is_missing_, rank_, src_
+            pattern = r'^(?:hour_|day_|month_|week_|is_missing_|rank_|src_).*'
+            preprocessor = ColumnTransformer(
+                transformers=[
+                    ('tfidf', tfidf, 'final_text'),
+                    ('dense', 'passthrough', make_column_selector(pattern=pattern))
+                ],
+                remainder='drop'
+            )
+            
     return Pipeline([
         ('prep', preprocessor),
-        ('clf', clf)
+        ('clf', model)
     ])
+
+def evaluate(pipeline, X, y, state_name, model_name):
+    # Standard Stratified K-Fold
+    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+    scores = cross_val_score(pipeline, X, y, cv=cv, scoring='f1_macro', n_jobs=-1)
+    return np.mean(scores)
 
 def run_ablation():
     set_global_seed(42)
-    print("="*80)
-    print(f"{'Configuration':<30} | {'Stratified (3)':<15} | {'Anchored (3)':<15} | {'Delta':<10}")
-    print("="*80)
+    print("="*100)
+    print("INCREMENTAL ABLATION STUDY: [CMB, MNB, LinearSVC]")
+    print(f"{'State':<35} | {'MNB':<10} | {'CMB':<10} | {'LinearSVC':<10}")
+    print("="*100)
     
-    # Load
-    df_raw = pd.read_csv("./dataset/development.csv")
-    # Ensuring timestamp is datetime initially for all steps because AnchoredSplit needs it
-    # But DatasetCleaner handles coercion. 
-    # For Step 0/1 (Raw), we must manually ensure timestamp exists if we want to run AnchoredSplit.
-    df_raw['timestamp'] = pd.to_datetime(df_raw['timestamp'], errors='coerce')
+    # 0. Load Raw
+    df = pd.read_csv("./dataset/development.csv")
     
-    # ----------------------------------------------------------------
-    # Step 00: Random Guess
-    # ----------------------------------------------------------------
-    clf_dummy = DummyClassifier(strategy='uniform', random_state=42)
-    # Dummy doesn't need features, but pipeline structure expects them.
-    # We can pass raw df and a dummy pipeline? 
-    # Or just evaluate(clf, df[['label']], ...) 
-    # evaluate expects inputs. Dummy ignores X.
-    evaluate(clf_dummy, df_raw[['label']], df_raw['label'], "0. Random Guess")
+    # Helper to print row
+    def run_step(df_current, step_name, use_all_features=False):
+        results = {}
+        for name, model in get_models().items():
+            feat_set = 'all_features' if use_all_features else 'text_only'
+            pipe = get_pipeline(name, model, feat_set)
+            
+            # Ensure final_text exists (for Step 0, we create it manually from title+article)
+            if 'final_text' not in df_current.columns:
+                 # Temporary fill for raw step
+                df_temp = df_current.copy()
+                df_temp['title'] = df_temp['title'].fillna('')
+                df_temp['article'] = df_temp['article'].fillna('')
+                df_temp['final_text'] = df_temp['title'] + " " + df_temp['article']
+                score = evaluate(pipe, df_temp, df_temp['label'], step_name, name)
+            else:
+                score = evaluate(pipe, df_current, df_current['label'], step_name, name)
+            results[name] = score
+            
+        print(f"{step_name:<35} | {results['MultinomialNB']:.4f}     | {results['ComplementNB']:.4f}     | {results['LinearSVC']:.4f}")
 
     # ----------------------------------------------------------------
-    # Step 0.5: Baseline (CNB)
+    # State 1: Baseline (Raw Text)
     # ----------------------------------------------------------------
-    # Re-using df_0 (prepared below) but we need to create it here or move it up.
-    # FeatureExtractor transform is stateless, so we can do it here.
-    df_0 = FeatureExtractor().transform(df_raw) 
+    # Just raw title+article, no cleaning.
+    run_step(df, "1. Raw Text (Baseline)")
     
-    pipe_cnb = make_text_pipeline(ComplementNB())
-    evaluate(pipe_cnb, df_0, df_0['label'], "0.5 Baseline (CNB)")
-
     # ----------------------------------------------------------------
-    # Step 1: Baseline (SVC)
-    # ----------------------------------------------------------------
-    # df_0 is already created above.
-    pipe_0 = make_text_pipeline(get_svc())
-    evaluate(pipe_0, df_0, df_0['label'], "1. Baseline (SVC)")
-
-    # ----------------------------------------------------------------
-    # Step 2: + DatasetCleaner
+    # State 2: + DatasetCleaner (Basic Chars)
     # ----------------------------------------------------------------
     cleaner = DatasetCleaner(verbose=False)
-    # Re-read raw to be clean
-    df_raw_2 = pd.read_csv("./dataset/development.csv") 
-    df_2 = cleaner.transform(df_raw_2)
-    df_2 = FeatureExtractor().transform(df_2)
-    
-    pipe_2 = make_text_pipeline(get_svc())
-    evaluate(pipe_2, df_2, df_2['label'], "2. + Cleaning")
-    
+    df = cleaner.fit_transform(df)
+    run_step(df, "2. + DatasetCleaner")
+
     # ----------------------------------------------------------------
-    # Step 3: + DatasetDeduplicator
+    # State 3: + Deduplication
     # ----------------------------------------------------------------
     dedup = DatasetDeduplicator(mode='advanced', verbose=False)
-    df_3 = dedup.transform(df_2)
-    pipe_3 = make_text_pipeline(get_svc())
-    evaluate(pipe_3, df_3, df_3['label'], "3. + Deduplication")
+    df = dedup.fit_transform(df)
+    run_step(df, "3. + Deduplicator")
 
     # ----------------------------------------------------------------
-    # Step 4: + TimeExtractor
+    # State 4: + FeatureExtractor (Missing Tokens)
     # ----------------------------------------------------------------
-    # TimeExtractor normally drops 'timestamp'. We must keep it for AnchoredSplit.
-    # We will modify the transform manually here or re-attach.
-    
+    # Adds 'final_text' with 'src_unknown', 'title_unknown', and source tokens
+    extractor = FeatureExtractor()
+    df = extractor.fit_transform(df)
+    run_step(df, "4. + FeatureExtractor (Tokens)")
+
+    # ----------------------------------------------------------------
+    # State 5: + AdvancedTextCleaner (URL/HTML)
+    # ----------------------------------------------------------------
+    adv = AdvancedTextCleaner(verbose=False)
+    df = adv.fit_transform(df)
+    run_step(df, "5. + AdvTextCleaner (URL+Regex)")
+
+    # ----------------------------------------------------------------
+    # State 6: + SourceTransformer (Metadata)
+    # ----------------------------------------------------------------
+    # This adds Dense features. We switch to use_all_features=True
+    src_trans = SourceTransformer(top_k=200)
+    df = src_trans.fit_transform(df)
+    run_step(df, "6. + Source (OHE)", use_all_features=True)
+
+    # ----------------------------------------------------------------
+    # State 7: + PageRank (Metadata)
+    # ----------------------------------------------------------------
+    pr = PageRankOneHot()
+    df = pr.fit_transform(df)
+    run_step(df, "7. + PageRank (OHE)", use_all_features=True)
+
+    # ----------------------------------------------------------------
+    # State 8: + TimeFeatures (Final)
+    # ----------------------------------------------------------------
+    # Note: NB models will ignore these in get_pipeline/ColumnTransformer
+    # SVC will use them.
     time_ext = TimeExtractor()
-    df_4_feats = time_ext.transform(df_3) # Has sin/cos, NO timestamp
-    df_4 = df_4_feats.copy()
-    df_4['timestamp'] = df_3['timestamp'].values # Re-attach for Splitter
-    
-    # Pipeline needs to consume text + time cols
-    time_cols = ['hour_sin', 'hour_cos', 'day_sin', 'day_cos', 'month_sin', 'month_cos']
-    
-    preprocessor_4 = ColumnTransformer(
-        transformers=[
-            ('tfidf', TfidfVectorizer(), 'final_text'),
-            ('time', 'passthrough', time_cols)
-        ],
-        remainder='drop' # drops timestamp
-    )
-    pipe_4 = Pipeline([
-        ('prep', preprocessor_4),
-        ('clf', get_svc())
-    ])
-    evaluate(pipe_4, df_4, df_4['label'], "4. + TimeFeatures")
-
-    # ----------------------------------------------------------------
-    # Step 5: + AdvancedTextCleaner
-    # ----------------------------------------------------------------
-    adv_cleaner = AdvancedTextCleaner(verbose=False)
-    df_5 = adv_cleaner.transform(df_4) # Transforms 'final_text' in place or new col
-    # df_5 has advanced cleaned final_text + time cols + timestamp
-    
-    # Reuse pipe_4 structure
-    evaluate(pipe_4, df_5, df_5['label'], "5. + AdvCleaning")
+    df = time_ext.fit_transform(df)
+    run_step(df, "8. + Time (Full Pipeline)", use_all_features=True)
 
 if __name__ == "__main__":
     run_ablation()

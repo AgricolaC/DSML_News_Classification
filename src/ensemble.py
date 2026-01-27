@@ -8,9 +8,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import TruncatedSVD
 from sklearn.svm import LinearSVC
 from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import MultinomialNB, ComplementNB
 from sklearn.ensemble import HistGradientBoostingClassifier, VotingClassifier
 from sklearn.model_selection import cross_val_score
-from preprocessing import DatasetCleaner, DatasetDeduplicator, FeatureExtractor, TimeExtractor, PageRankOneHot, SourceTransformer
+from preprocessing import DatasetCleaner, DatasetDeduplicator, FeatureExtractor, TimeExtractor, PageRankOneHot, SourceTransformer, AdvancedTextCleaner
 from cv_utils import AnchoredTimeSeriesSplit
 from seed import set_global_seed
 
@@ -63,11 +64,16 @@ def get_pipelines():
         ('vec', TfidfVectorizer(**tfidf_args)),
     ]
 
+    # SVC (Raw - will use CalibratedSVC wrapper)
+    svc_base = LinearSVC(class_weight='balanced', random_state=42, dual=False)
+    # Apply BEST_PARAMS to base estimator directly
+    svc_params = {k.replace('clf__', ''): v for k, v in BEST_PARAMS['svc'].items() if k.startswith('clf__')}
+    svc_base.set_params(**svc_params)
+
     pipe_svc = Pipeline([
         ('prep', make_ct(svc_steps)),
-        ('clf', LinearSVC(class_weight='balanced', random_state=42, dual=False))
-    ])
-    pipe_svc.set_params(**BEST_PARAMS['svc']) 
+        ('clf', svc_base)  # Raw SVC, no nested CV
+    ]) 
 
     # LR
     lr_steps = [
@@ -79,23 +85,71 @@ def get_pipelines():
     ])
     pipe_lr.set_params(**BEST_PARAMS['lr'])
 
-    # HGB
+    # HGB (Gets Time Features - unique to this model)
     # Tfidf -> SVD -> HGB
     hgb_steps = [
         ('vec', TfidfVectorizer(**tfidf_args)),
         ('svd', TruncatedSVD(n_components=400, random_state=42))
     ]
+    
+    # Custom CT for HGB: includes time features
+    hgb_ct = ColumnTransformer(
+        transformers=[
+            ('txt', Pipeline(hgb_steps), 'final_text'),
+            ('dense', 'passthrough', make_column_selector(pattern=r'^(?:hour_|day_|month_|week_|is_missing_|rank_|src_).*'))
+        ],
+        remainder='drop'
+    )
+    
     pipe_hgb = Pipeline([
-        ('prep', make_ct(hgb_steps)),
+        ('prep', hgb_ct),
         ('clf', HistGradientBoostingClassifier(class_weight='balanced', random_state=42))
     ])
     # HGB Params might have prefixes like 'clf__learning_rate'
     pipe_hgb.set_params(**BEST_PARAMS['hgbc'])
 
+    # MNB (Text + OHE only, No Time Cyclical due to negative values)
+    mnb_steps = [
+        ('vec', TfidfVectorizer(**tfidf_args))
+    ]
+    
+    mnb_ct = ColumnTransformer(
+        transformers=[
+            ('txt', Pipeline(mnb_steps), 'final_text'),
+            ('dense', 'passthrough', make_column_selector(pattern=r'^(?:is_missing_|rank_|src_).*'))
+        ],
+        remainder='drop'
+    )
+    
+    pipe_mnb = Pipeline([
+        ('prep', mnb_ct),
+        ('clf', MultinomialNB(alpha=0.1))
+    ])
+
+    # CNB (Text + OHE only, same as MNB)
+    cnb_steps = [
+        ('vec', TfidfVectorizer(**tfidf_args))
+    ]
+    
+    cnb_ct = ColumnTransformer(
+        transformers=[
+            ('txt', Pipeline(cnb_steps), 'final_text'),
+            ('dense', 'passthrough', make_column_selector(pattern=r'^(?:is_missing_|rank_|src_).*'))
+        ],
+        remainder='drop'
+    )
+    
+    pipe_cnb = Pipeline([
+        ('prep', cnb_ct),
+        ('clf', ComplementNB(alpha=0.1))
+    ])
+
     return [
         ('svc', pipe_svc),
         ('lr', pipe_lr),
-        ('hgb', pipe_hgb)
+        ('hgb', pipe_hgb),
+        ('mnb', pipe_mnb),
+        ('cnb', pipe_cnb)
     ]
 
 def preprocess_dataset(df, is_train=True, source_transformer=None):
@@ -120,7 +174,10 @@ def preprocess_dataset(df, is_train=True, source_transformer=None):
     # 3. Text Feature Extractor
     df = FeatureExtractor().transform(df)
     
-    # 3b. Source Tagging (Top 300)
+    # 3a. Advanced Cleaning (URL Persist + Strip HTML)
+    df = AdvancedTextCleaner().transform(df)
+    
+    # 3b. Source Tagging
     if source_transformer is None:
         source_transformer = SourceTransformer(top_k=300)
         df = source_transformer.fit_transform(df)
@@ -130,19 +187,20 @@ def preprocess_dataset(df, is_train=True, source_transformer=None):
     # 3c. PageRank One-Hot
     df = PageRankOneHot().transform(df)
     
-    # 4. Time Extractor (Preserving timestamp)
+    # 4. Time Extractor (Disabled)
     if 'timestamp' in df.columns:
-        timestamps = pd.to_datetime(df['timestamp'], errors='coerce')
-        df = TimeExtractor().transform(df)
-        df['timestamp'] = timestamps # Restore
+         timestamps = pd.to_datetime(df['timestamp'], errors='coerce')
+         df = TimeExtractor().transform(df)
+         df['timestamp'] = timestamps # Restore
     else:
-        df = TimeExtractor().transform(df)
+         df = TimeExtractor().transform(df)
         
     return df, source_transformer
 
 def get_voting_ensemble():
     load_params()
     estimators = get_pipelines()
+    # Use hard voting since raw LinearSVC doesn't have predict_proba
     return VotingClassifier(estimators=estimators, voting='hard')
 
 def run_cv_evaluation():
@@ -181,7 +239,7 @@ def run_cv_evaluation():
         
         # Evaluate Constituent Models
         # Note: 'estimators_' stores the fitted estimators
-        model_names = ['LinearSVC', 'LogisticRegression', 'HistGradientBoosting']
+        model_names = ['LinearSVC', 'LogisticRegression', 'HistGradientBoosting', 'MultinomialNB', 'ComplementNB']
         for name, model in zip(model_names, ensemble.estimators_):
             pred = model.predict(X_test)
             score = f1_score(y_test, pred, average='macro')
