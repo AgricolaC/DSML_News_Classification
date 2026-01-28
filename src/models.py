@@ -1,9 +1,3 @@
-"""
-Centralized model definitions and pipeline builders.
-
-This module provides a single source of truth for all model configurations
-used across ensemble.py, explainability.py, ablation.py, and tuning.py.
-"""
 import json
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer, make_column_selector
@@ -18,7 +12,6 @@ from sklearn.preprocessing import FunctionTransformer
 from .preprocessing import SourceTransformer, RawTimeExtractor
 
 def to_dense(x):
-    """Convert sparse matrix to dense array for HGB."""
     return x.toarray()
 
 # Load hyperparameters
@@ -27,8 +20,6 @@ def load_best_params(path='best_params.json'):
     try:
         with open(path, 'r') as f:
             params = json.load(f)
-        
-        # Convert ngram_range from list to tuple (JSON doesn't support tuples)
         if 'tfidf' in params and 'ngram_range' in params['tfidf']:
             if isinstance(params['tfidf']['ngram_range'], list):
                 params['tfidf']['ngram_range'] = tuple(params['tfidf']['ngram_range'])
@@ -39,24 +30,17 @@ def load_best_params(path='best_params.json'):
         return get_default_params()
 
 def get_default_params():
-    """Default hyperparameters if best_params.json doesn't exist."""
+    """Default hyperparameters"""
     return {
-        'tfidf': {'max_features': 30000, 'ngram_range': (1, 2), 'min_df': 2},
+        'tfidf': {'ngram_range': (1, 3), 'min_df': 2, 'sublinear_tf': True, 'max_features': 30000, 'lowercase': True},
         'svc': {'clf__C': 0.1},
-        'lr': {'clf__C': 1.0},
-        'hgbc': {'clf__learning_rate': 0.1, 'clf__max_depth': 7}
+        'lr': {'clf__C': 1.0, 'clf__penalty': 'l2'},
+        'hgbc': {'clf__learning_rate': 0.1, 'clf__max_depth': 10, 'clf__l2_regularization': 10.0, 'clf__max_leaf_nodes': 63}
     }
 
 def make_column_transformer(steps, feature_pattern=r'^(?:hour_|day_|month_|week_|is_missing_|rank_|src_).*'):
     """
     Factory for creating ColumnTransformer.
-    
-    Args:
-        steps: List of (name, transformer) tuples for text processing
-        feature_pattern: Regex pattern for dense features
-    
-    Returns:
-        ColumnTransformer instance
     """
     return ColumnTransformer(
         transformers=[
@@ -66,19 +50,11 @@ def make_column_transformer(steps, feature_pattern=r'^(?:hour_|day_|month_|week_
         remainder='drop'
     )
 
-def get_base_models(params=None):
+def get_base_models():
     """
-    Get dictionary of base (unconfigured) model instances.
-    
-    Args:
-        params: Optional dict of hyperparameters from load_best_params()
-    
-    Returns:
-        Dict mapping model names to sklearn estimator instances
+    Get a dictionary of base model instances.
     """
-    if params is None:
-        params = load_best_params()
-    
+    params = load_best_params()
     return {
         'svc': LinearSVC(class_weight='balanced', random_state=42, dual=False, C=0.1),
         'lr': LogisticRegression(class_weight='balanced', solver='saga', random_state=42, max_iter=2500),
@@ -90,16 +66,9 @@ def get_base_models(params=None):
 def get_pipelines(models=None, params=None):
     """
     Build sklearn pipelines for specified models.
-    
-    Args:
-        models: List of model names to include (default: all 5)
-        params: Optional dict of hyperparameters
-    
-    Returns:
-        List of (name, pipeline) tuples suitable for VotingClassifier
     """
-    if params is None:
-        params = load_best_params()
+    
+    params = load_best_params()
     
     if models is None:
         models = ['svc', 'lr', 'hgb', 'mnb', 'cnb']
@@ -107,7 +76,6 @@ def get_pipelines(models=None, params=None):
     tfidf_args = params.get('tfidf', {})
     pipelines = []
     
-    # SVC Pipeline
     if 'svc' in models:
         svc_steps = [('vec', TfidfVectorizer(**tfidf_args))]
         svc_base = LinearSVC(class_weight='balanced', random_state=42, dual=False)
@@ -121,7 +89,6 @@ def get_pipelines(models=None, params=None):
         ], memory='.cache')
         pipelines.append(('svc', pipe_svc))
     
-    # Logistic Regression Pipeline
     if 'lr' in models:
         lr_steps = [('vec', TfidfVectorizer(**tfidf_args))]
         pipe_lr = Pipeline([
@@ -132,7 +99,6 @@ def get_pipelines(models=None, params=None):
         pipe_lr.set_params(**params.get('lr', {}))
         pipelines.append(('lr', pipe_lr))
     
-    # HistGradientBoosting Pipeline 
     if 'hgb' in models:
         hgb_steps = [
             ('vec', TfidfVectorizer(**tfidf_args)),
@@ -156,7 +122,7 @@ def get_pipelines(models=None, params=None):
         mnb_steps = [('vec', TfidfVectorizer(**tfidf_args))]
         mnb_ct = make_column_transformer(
             mnb_steps,
-            feature_pattern=r'^(?:is_missing_|src_).*'  # Exclude time & rank
+            feature_pattern=r'^(?:is_missing_|src_).*'  
         )
         pipe_mnb = Pipeline([
             ('src_gen', SourceTransformer(top_k=300)),
@@ -170,7 +136,7 @@ def get_pipelines(models=None, params=None):
         cnb_steps = [('vec', TfidfVectorizer(**tfidf_args))]
         cnb_ct = make_column_transformer(
             cnb_steps,
-            feature_pattern=r'^(?:is_missing_|src_).*'  # Exclude time & rank
+            feature_pattern=r'^(?:is_missing_|src_).*' 
         )
         pipe_cnb = Pipeline([
             ('src_gen', SourceTransformer(top_k=300)),

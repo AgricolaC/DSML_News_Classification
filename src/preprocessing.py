@@ -5,19 +5,10 @@ from sklearn.base import BaseEstimator, TransformerMixin
 import ftfy
 
 class DatasetCleaner(BaseEstimator, TransformerMixin):
-    """
-    Handles cleaning and standardization of raw dataset columns.
-    
-    Parameters:
-    ----------
-    text_cols : list of str, default=['source', 'title', 'article']
-        List of columns containing text data to clean (strip whitespace, remove artifacts).
-    date_col : str, default='timestamp'
-        Name of the column containing timestamp data to be coerced to datetime.
-    rank_col : str, default='page_rank'
-        Name of the column containing PageRank data to be coerced to numeric.
-    verbose : bool, default=False
-        If True, prints a report of uncovered missing values after cleaning.
+    r"""
+    This is the entry point for raw data cleaning. We handle type conversion and 
+    remove artifacts like "\N" or "\\" before any feature engineering happens. 
+    We also use the 'ftfy' library that helps fix encoding errors in text.
     """
     def __init__(self, text_cols=['source', 'title', 'article'], 
                  date_col='timestamp', rank_col='page_rank', verbose=False):
@@ -70,17 +61,15 @@ class DatasetCleaner(BaseEstimator, TransformerMixin):
 
 class DatasetDeduplicator(BaseEstimator, TransformerMixin):
     """
-    Handles duplicate removal with configurable strategies for ablation studies.
-    
-    Parameters:
-    ----------
-    mode : {'advanced', 'simple', 'none'}, default='advanced'
-        - 'none': Retains all duplicates (Base case).
-        - 'simple': Drops content duplicates based on file order (Naïve approach).
-        - 'advanced': Prioritizes specific labels over generic ones, resolves conflicts, 
-                      and keeps earliest timestamps (Smart approach).
-    verbose : bool, default=True
-        If True, prints statistics about dropped rows.
+    Removes duplicate rows based on a configurable strategy.
+
+    Mode 'none' returns the dataset as is
+
+    Mode 'simple' drops duplicates, keeping the first occurrence.
+
+    Mode 'advanced' does prioritization & conflict resolution. This strategy handles cases
+    where the same article appears multiple times but with different labels. We prioritize specific labels over generic labels
+    and remove confusing articles that claim to be two different specific things.
     """
     def __init__(self, mode='advanced', verbose=True):
         self.mode = mode
@@ -114,32 +103,35 @@ class DatasetDeduplicator(BaseEstimator, TransformerMixin):
             return X
 
         # Mode 3: Advanced Deduplication
-        # Custom logic: Specific > Generic, Conflict Resolution, Time sort.
+        # Specific > Generic (Class 5), Conflict Resolution, Time sort.
         if self.mode == 'advanced':
             if 'label' not in X.columns:
                 if self.verbose:
                     print("[DatasetDeduplicator] No 'label' column found. Skipping deduplication")
                 return X
             
-            # Sort Priority (Specific Label > Generic Label > Timestamp)
             X['is_generic_label'] = (X['label'] == 5)
+            # We sort the rows to line them up for drop_duplicates later. 
+            # The logic is that we sort by title, grouping identical articles together,
+            # then we sort by is_generic_label and since false < true this puts specific labels on top and generic labels below them.
+            # if both articles have the same label type, we put the earliest article first.
             X = X.sort_values(
                 by=['title', 'is_generic_label', 'timestamp'], 
                 ascending=[True, True, True]
             )
-            
             has_specific_label_mask = X['label'] != 5
             rows_with_specific_labels = X[has_specific_label_mask]
-            
+            # For every unique article content, we count how many different specific labels exist. 
+            # If the result is bigger than one, it means we have a contradiction. We aim to identify these contradictions.
             label_counts = rows_with_specific_labels.groupby(self.content_cols)['label'].nunique()
             content_with_contradictions = label_counts[label_counts > 1].index
-        
+            # We remove the data with contradiction entirely.
             if len(content_with_contradictions) > 0:
                 if self.verbose:
                     print(f"[DatasetDeduplicator] Dropping {len(content_with_contradictions)} articles with impossible label conflicts.")
                 X = X.set_index(self.content_cols).drop(index=content_with_contradictions).reset_index()    
-            
-            # Final Deduplication
+            # Final deduplication. It ties to our sorting step earlier which enables us to keep
+            # Articles with specific labels and discard their generic duplicate.
             X = X.drop_duplicates(subset=self.content_cols, keep='first')
             X = X.drop(columns=['is_generic_label'])
 
@@ -151,7 +143,6 @@ class DatasetDeduplicator(BaseEstimator, TransformerMixin):
 class FeatureExtractor(BaseEstimator, TransformerMixin):
     """
     Constructs the primary text feature used for classification.
-    
     Combines 'source', 'title', and 'article' into a single 'final_text' column.
     """
     def __init__(self):
@@ -163,7 +154,8 @@ class FeatureExtractor(BaseEstimator, TransformerMixin):
     def transform(self, X):
         X = X.copy()
         
-        # 1. Source Tokenization (Lowercase, Unknown handling)
+        # Source Tokenization (Lowercase, handle NaN)
+        # We have to fill NaN with empty strings so the function doesn't crash.
         X['source'] = X['source'].fillna('')
         source_tokens = X['source'].apply(self._tokenize_source)
         
@@ -179,6 +171,9 @@ class FeatureExtractor(BaseEstimator, TransformerMixin):
         if not text:
             return "src_unknown"
         # Standardize: Lowercase + Alphanumeric
+        # by using this regex statement, we replace any character that is NOT a lowecase letter 
+        # or a number with ''. 
+        # The N.Y. Times -> thenytimes
         clean = re.sub(r'[^a-z0-9]', '', str(text).lower())
         if not clean:
             return "src_unknown"
@@ -187,20 +182,19 @@ class FeatureExtractor(BaseEstimator, TransformerMixin):
 class TimeExtractor(BaseEstimator, TransformerMixin):
     """
     Extracts cyclical temporal features from a timestamp column.
-    
-    New: Adds year_offset (fitted on train), quarter, and is_weekend.
-    
-    Parameters:
-    ----------
-    date_col : str, default='timestamp'
-        Name of the timestamp column to extract features from.
     """
     def __init__(self, date_col='timestamp'):
         self.date_col = date_col
         self.median_year_ = None  # Fitted on train
 
     def fit(self, X, y=None):
-        """Learn median year from training data for symmetric year normalization."""
+        # We have to pass year features (which are non-cyclical) carefully.
+        # If we fit the model on development set and the evaluation set has unknown years
+        # we have to make sure our .transform is able to somehow work with this value
+        # and not break down. Our methodology aims to treat the year in a [-inf,inf] range.
+        # We want to find the median year of the development data, and every new data that is 
+        # evaluated (from the development or evaluation set) will be a -/+ (or 0) integer value 
+        # depending on their year.
         dates = pd.to_datetime(X[self.date_col], errors='coerce')
         valid_dates = dates[dates.notna()]
         
@@ -210,10 +204,9 @@ class TimeExtractor(BaseEstimator, TransformerMixin):
     def transform(self, X):
         X = X.copy()
         
-        # Ensure it is datetime
         dates = pd.to_datetime(X[self.date_col], errors='coerce')
         
-        # Hour (0-23)
+        # Hour 
         hours = dates.dt.hour
         X['hour_sin'] = np.sin(2 * np.pi * hours / 24)
         X['hour_cos'] = np.cos(2 * np.pi * hours / 24)
@@ -238,13 +231,13 @@ class TimeExtractor(BaseEstimator, TransformerMixin):
         X['quarter_sin'] = np.sin(2 * np.pi * quarter / 4)
         X['quarter_cos'] = np.cos(2 * np.pi * quarter / 4)
         
-        # Year Offset (median-based, symmetric distribution)
+        # Year Offset (median-based)
         # Use 0 for missing dates (assumes median period)
-        # Negative = before median, Positive = after median
         year = dates.dt.year
         X['year_offset'] = ((year - self.median_year_).fillna(0)).astype(int)
 
-        # Missing date indicator
+        # Missing date indicator. We explicitly want to tell the model that 
+        # we don't know the date for this row.
         X['is_missing_date'] = dates.isna().astype(int)
 
         # Fill NaN values for all time features (for missing timestamps)
@@ -260,16 +253,11 @@ class TimeExtractor(BaseEstimator, TransformerMixin):
 
 class RawTimeExtractor(BaseEstimator, TransformerMixin):
     """
-    Extracts raw temporal features for models with native NaN handling (e.g., HGB).
+    Extracts raw temporal features for models with native NaN handling
     
     Unlike TimeExtractor, this keeps NaN values instead of filling them,
     allowing models like HistGradientBoosting to treat missing timestamps
     as a separate category.
-    
-    Parameters:
-    ----------
-    date_col : str, default='timestamp'
-        Name of the timestamp column to extract features from.
     """
     def __init__(self, date_col='timestamp'):
         self.date_col = date_col
@@ -289,7 +277,6 @@ class RawTimeExtractor(BaseEstimator, TransformerMixin):
         # Ensure it is datetime
         dates = pd.to_datetime(X[self.date_col], errors='coerce')
         
-        # Extract raw time features (keep NaN for missing)
         X['hour'] = dates.dt.hour
         X['day_of_week'] = dates.dt.dayofweek
         X['month'] = dates.dt.month
@@ -325,7 +312,6 @@ class PageRankOneHot(BaseEstimator, TransformerMixin):
         for r in range(1, 6):
             X[f'rank_{r}'] = (ranks == r).astype(int)
             
-        # (Rank 0/NaN becomes all zeros)
         if self.rank_col in X.columns:
             X = X.drop(columns=[self.rank_col])
             
@@ -356,23 +342,23 @@ class SourceTransformer(BaseEstimator, TransformerMixin):
         if 'source' not in X.columns:
             return X
             
-        X['source_clean'] = X['source'].where(X['source'].isin(self.top_sources_), 'Other')
+        X['top_sources'] = X['source'].where(X['source'].isin(self.top_sources_), 'Other')
         
         # One-Hot Encode
-        dummies = pd.get_dummies(X['source_clean'], prefix='src')
+        dummies = pd.get_dummies(X['top_sources'], prefix='src')
         
-        # Ensure we have consistent columns (align with fitted top_sources + Other)
+        # align with fitted top_sources + other
         expected_cols = [f'src_{s}' for s in self.top_sources_] + ['src_Other']
         
-        # Identify and create missing columns efficiently
+        # Identify and create missing columns
         missing_cols = [col for col in expected_cols if col not in dummies.columns]
         if missing_cols:
             missing_data = pd.DataFrame(0, index=dummies.index, columns=missing_cols)
             dummies = pd.concat([dummies, missing_data], axis=1)
             
-        # Select columns in correct order using a copy to defragment
+        # Select columns in correct order using a copy 
         dummies = dummies[expected_cols].copy()
         
         X = pd.concat([X, dummies], axis=1)
-        X = X.drop(columns=['source', 'source_clean'])
+        X = X.drop(columns=['source', 'top_sources'])
         return X

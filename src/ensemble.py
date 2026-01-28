@@ -15,34 +15,9 @@ from .preprocessing import DatasetCleaner, DatasetDeduplicator, FeatureExtractor
 from .cv_utils import AnchoredTimeSeriesSplit
 from .seed import set_global_seed
 
-BEST_PARAMS = {
-    'tfidf': {'ngram_range': (1, 3), 'min_df': 2, 'sublinear_tf': True, 'max_features': 30000, 'lowercase': True},
-    'svc': {'clf__C': 0.1},
-    'lr': {'clf__C': 1.0, 'clf__penalty': 'l2'},
-    'hgbc': {'clf__learning_rate': 0.1, 'clf__max_depth': 10, 'clf__l2_regularization': 10.0, 'clf__max_leaf_nodes': 63}
-}
 
-def load_params():
-    if os.path.exists("best_params.json"):
-        print("Loading best_params.json...")
-        with open("best_params.json", "r") as f:
-            tuned = json.load(f)
-            # Update BEST_PARAMS shallowly
-            for k in tuned:
-                if k in BEST_PARAMS:
-                    # Fix JSON list back to tuple for ngram_range
-                    if k == 'tfidf' and 'ngram_range' in tuned[k]:
-                        tuned[k]['ngram_range'] = tuple(tuned[k]['ngram_range'])
-                    
-                    # Fix LR penalty warning
-                    if k == 'lr' and 'clf__penalty' in tuned[k] and tuned[k]['clf__penalty'] == 'l2':
-                         del tuned[k]['clf__penalty']
 
-                    BEST_PARAMS[k] = tuned[k]
-    else:
-        print("Using Default BEST_PARAMS.")
-
-from .models import get_pipelines, load_best_params as load_params_from_models
+from .models import get_pipelines, load_best_params as load_params
 
 
 def preprocess_dataset(df, is_train=True, source_transformer=None, sort_by_time=True):
@@ -52,11 +27,7 @@ def preprocess_dataset(df, is_train=True, source_transformer=None, sort_by_time=
     - Deduplication (Train only)
     - Feature Extraction (Text concatenation)
     - Time Extraction (Sin/Cos features)
-    
-    Args:
-        sort_by_time: If True, sort by timestamp (needed for train/CV). 
-                      If False, preserve original order (needed for eval/submission).
-    
+
     Returns:
     - df: Transformed DataFrame
     - source_transformer: The fitted SourceTransformer instance
@@ -73,15 +44,8 @@ def preprocess_dataset(df, is_train=True, source_transformer=None, sort_by_time=
     
     # 3a. HTML Removal
     # df = AdvancedTextCleaner().transform(df)
-    
-    # 3b. Source Tagging
-    # 3b. Source Tagging (Now handled in Model Pipeline to prevent leakage)
-    # The pipeline step 'src_gen' will handle this.
-    # We do nothing here.
-    if source_transformer is not None:
-         print("Warning: source_transformer argument found but ignored in favor of Pipeline")
 
-    # 3c. PageRank One-Hot
+    # 3b. PageRank One-Hot
     df = PageRankOneHot().transform(df)
     
     # 4. Time Extractors (dual: cyclical for SVC, raw for HGB)
@@ -116,7 +80,6 @@ def preprocess_dataset(df, is_train=True, source_transformer=None, sort_by_time=
     return df, source_transformer
 
 def get_voting_ensemble():
-    load_params() # Updates global BEST_PARAMS (legacy, but kept for consistency)
     
     all_pipelines = get_pipelines()
     
@@ -134,7 +97,7 @@ def get_voting_ensemble():
 
 def run_cv_evaluation():
     set_global_seed(42)
-    load_params()
+
     
     print("="*60)
     print("RUNNING CROSS-VALIDATION EVALUATION")
@@ -165,7 +128,6 @@ def run_cv_evaluation():
         # Fit Ensemble
         ensemble.fit(X_train, y_train)
         
-        # --- Evaluate Constituent Models ---
         # Extract fitted models from the hierarchy
         svc = ensemble.named_estimators_['svc']
         lr = ensemble.named_estimators_['lr']
@@ -223,49 +185,5 @@ def run_cv_evaluation():
         json.dump(results_dict, f, indent=2)
     print("✓ Saved fold_scores.json")
     
-    # Generate markdown report
-    report = f"""# Ensemble Cross-Validation Results
-
-**Generated:** {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-## Summary
-
-- **Mean F1 Score:** {mean_f1:.4f} ± {std_f1:.4f}
-- **Voting Strategy:** Hierarchical (SVC=1, LR=1, [HGB+MNB+CNB]=1)
-- **Number of Folds:** {len(fold_scores)}
-- **Data Sorting:** Strict Timestamp
-
-## Fold Scores
-
-| Fold | F1 Score |
-|------|----------|
-"""
-    for i, score in enumerate(fold_scores, 1):
-        report += f"| {i} | {score:.4f} |\n"
-    
-    report += f"""
-## Configuration
-
-- **Preprocessing:** DatasetCleaner + DatasetDeduplicator + FeatureExtractor + TimeExtractor + **TimeSort**
-- **Structure:**
-  - **Tier 1 (Final Vote):** LinearSVC, LogisticRegression, WeakConsensus
-  - **Tier 2 (WeakConsensus):** HistGradientBoosting, MultinomialNB, ComplementNB
-- **Feature Distribution:**
-  - HGB: Text + Density + Time + PageRank + Source
-  - SVC/LR: Text + Density + PageRank + Source (No Time)
-  - MNB/CNB: Text + Source (No Time, No PageRank, No Density)
-
-## Notes
-
-Results saved to `results/ensemble_cv/fold_scores.json`.
-"""
-    
-    with open('results/ensemble_cv/cv_report.md', 'w') as f:
-        f.write(report)
-    print("✓ Saved cv_report.md")
-    
-    print(f"\nArtifacts saved successfully!")
-
-
 if __name__ == "__main__":
     run_cv_evaluation()
