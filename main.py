@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 
-# Add src to system path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 
 from src.ensemble import preprocess_dataset, get_voting_ensemble, load_params
@@ -18,7 +17,6 @@ def run_final_prediction():
     print("FINAL MODEL TRAINING & SUBMISSION")
     print("="*60)
     
-    # Create progress bar for main steps
     with tqdm(total=4, desc="Overall Progress", unit="step", ncols=80) as pbar:
         # 1. Load Data
         pbar.set_description("[1/4] Loading Data")

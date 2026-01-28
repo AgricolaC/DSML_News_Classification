@@ -28,7 +28,6 @@ from .seed import set_global_seed
 from .models import get_pipelines, load_best_params
 import os
 
-# Parameter grids for each model
 PARAM_GRIDS = {
     'svc': {
         'clf__C': [0.01, 0.1, 1.0, 10.0],

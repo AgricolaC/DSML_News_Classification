@@ -128,58 +128,41 @@ def run_ablation():
             'LinearSVC_F1': results['LinearSVC']
         })
 
-    # ----------------------------------------------------------------
     # State 1: Baseline (Raw Text)
-    # ----------------------------------------------------------------
     # Just raw title+article, no cleaning.
     run_step(df, "1. Raw Text (Baseline)")
     
-    # ----------------------------------------------------------------
     # State 2: + DatasetCleaner (Basic Chars)
-    # ----------------------------------------------------------------
     cleaner = DatasetCleaner(verbose=False)
     df = cleaner.fit_transform(df)
     run_step(df, "2. + DatasetCleaner")
 
-    # ----------------------------------------------------------------
     # State 3: + Deduplication
-    # ----------------------------------------------------------------
     dedup = DatasetDeduplicator(mode='advanced', verbose=False)
     df = dedup.fit_transform(df)
     run_step(df, "3. + Deduplicator")
 
-    # ----------------------------------------------------------------
     # State 4: + FeatureExtractor (Missing Tokens)
-    # ----------------------------------------------------------------
     # Adds 'final_text' with 'src_unknown', 'title_unknown', and source tokens
     extractor = FeatureExtractor()
     df = extractor.fit_transform(df)
     run_step(df, "4. + FeatureExtractor (Tokens)")
 
-    # ----------------------------------------------------------------
-    # State 5: (REMOVED - AdvancedTextCleaner only for explainability)
-    # ----------------------------------------------------------------
-    # Skipping this state - advanced cleaning not used in production
+    # State 5: (REMOVED)
     # run_step(df, "5. (SKIPPED - AdvTextCleaner)")
 
-    # ----------------------------------------------------------------
     # State 6: + SourceTransformer (Metadata)
-    # ----------------------------------------------------------------
     # This adds Dense features. We switch to use_all_features=True
     src_trans = SourceTransformer(top_k=300)
     df = src_trans.fit_transform(df)
     run_step(df, "6. + Source (OHE)", use_all_features=True)
 
-    # ----------------------------------------------------------------
     # State 7: + PageRank (Metadata)
-    # ----------------------------------------------------------------
     pr = PageRankOneHot()
     df = pr.fit_transform(df)
     run_step(df, "7. + PageRank (OHE)", use_all_features=True)
 
-    # ----------------------------------------------------------------
     # State 8: + TimeFeatures (Final)
-    # ----------------------------------------------------------------
     # Note: NB models will ignore these in get_pipeline/ColumnTransformer
     # SVC will use them.
     time_ext = TimeExtractor()
