@@ -4,8 +4,8 @@ import numpy as np
 class AnchoredTimeSeriesSplit:
     """
     Custom Cross-Validation iterator.
-    - Anchors 'NaT' missing date indices in EVERY training fold.
-    - Performs TimeSeriesSplit (expanding window) on dated indices.
+    We anchor 'NaT' missing date indices in EVERY training fold.
+    We perform TimeSeriesSplit (expanding window) on dated indices.
     """
     def __init__(self, df, n_splits=5):
         self.df = df
