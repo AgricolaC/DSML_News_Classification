@@ -1,7 +1,6 @@
 # News Article Classification
 
-Machine learning pipeline built to classify news articles into 7 categories: **International**, **Sports**, **Business**, **Sci/Tech**, **City**, **Entertainment**, and **Politics**.
-
+Machine learning pipeline built to classify news articles into 7 categories.
 This project implements a Hierarchical Voting Ensemble, combining linear and non-linear classifiers with feature engineering (time extraction, source embeddings,text cleaning) to achieve high-performance text classification.
 
 ---
