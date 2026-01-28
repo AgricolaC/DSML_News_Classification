@@ -22,10 +22,10 @@ import numpy as np
 import json
 import argparse
 from sklearn.model_selection import GridSearchCV
-from src.preprocessing import DatasetCleaner, DatasetDeduplicator, FeatureExtractor, TimeExtractor, PageRankOneHot, SourceTransformer
-from src.cv_utils import AnchoredTimeSeriesSplit
-from src.seed import set_global_seed
-from src.models import get_pipelines, load_best_params
+from .preprocessing import DatasetCleaner, DatasetDeduplicator, FeatureExtractor, TimeExtractor, PageRankOneHot, SourceTransformer
+from .cv_utils import AnchoredTimeSeriesSplit
+from .seed import set_global_seed
+from .models import get_pipelines, load_best_params
 import os
 
 # Parameter grids for each model

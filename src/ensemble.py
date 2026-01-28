@@ -11,9 +11,9 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.naive_bayes import MultinomialNB, ComplementNB
 from sklearn.ensemble import HistGradientBoostingClassifier, VotingClassifier
 from sklearn.model_selection import cross_val_score
-from preprocessing import DatasetCleaner, DatasetDeduplicator, FeatureExtractor, TimeExtractor, PageRankOneHot, SourceTransformer, AdvancedTextCleaner
-from cv_utils import AnchoredTimeSeriesSplit
-from seed import set_global_seed
+from .preprocessing import DatasetCleaner, DatasetDeduplicator, FeatureExtractor, TimeExtractor, RawTimeExtractor, PageRankOneHot, SourceTransformer
+from .cv_utils import AnchoredTimeSeriesSplit
+from .seed import set_global_seed
 
 BEST_PARAMS = {
     'tfidf': {'ngram_range': (1, 3), 'min_df': 2, 'sublinear_tf': True, 'max_features': 30000, 'lowercase': True},
@@ -42,10 +42,10 @@ def load_params():
     else:
         print("Using Default BEST_PARAMS.")
 
-from models import get_pipelines, load_best_params as load_params_from_models
+from .models import get_pipelines, load_best_params as load_params_from_models
 
 
-def preprocess_dataset(df, is_train=True, source_transformer=None):
+def preprocess_dataset(df, is_train=True, source_transformer=None, sort_by_time=True):
     """
     Applies the standard preprocessing pipeline:
     - Cleaning
@@ -53,12 +53,16 @@ def preprocess_dataset(df, is_train=True, source_transformer=None):
     - Feature Extraction (Text concatenation)
     - Time Extraction (Sin/Cos features)
     
+    Args:
+        sort_by_time: If True, sort by timestamp (needed for train/CV). 
+                      If False, preserve original order (needed for eval/submission).
+    
     Returns:
     - df: Transformed DataFrame
     - source_transformer: The fitted SourceTransformer instance
     """
     # 1. Cleaner
-    df = DatasetCleaner(verbose=False).transform(df)
+    df = DatasetCleaner(verbose=True).transform(df)
     
     # 2. Deduplicator (Train Only)
     if is_train:
@@ -80,18 +84,33 @@ def preprocess_dataset(df, is_train=True, source_transformer=None):
     # 3c. PageRank One-Hot
     df = PageRankOneHot().transform(df)
     
-    # 4. Time Extractor (Disabled)
+    # 4. Time Extractors (dual: cyclical for SVC, raw for HGB)
     if 'timestamp' in df.columns:
-         timestamps = pd.to_datetime(df['timestamp'], errors='coerce')
-         df = TimeExtractor().transform(df)
-         df['timestamp'] = timestamps # Restore
-    else:
-         df = TimeExtractor().transform(df)
+        timestamps = pd.to_datetime(df['timestamp'], errors='coerce')
         
-    # 5. Strict Time Sorting for CV
-    if 'timestamp' in df.columns:
-        # Move NaT to the beginning (or end? AnchoredTimeSeriesSplit handles NaT specially)
-        # We want valid dates to be sorted.
+        # Cyclical time features for LinearSVC (sin/cos, 0-fill)
+        time_extractor_cyclical = TimeExtractor()
+        df = time_extractor_cyclical.fit_transform(df)
+        
+        # Raw time features for HGB (native NaN handling)
+        # Need to restore timestamp first
+        df['timestamp'] = timestamps
+        time_extractor_raw = RawTimeExtractor()
+        df_raw_time = time_extractor_raw.fit_transform(df[['timestamp']])
+        
+        # Add raw features with 'raw_' prefix to distinguish
+        for col in ['hour', 'day_of_week', 'month', 'quarter', 'year_offset']:
+            if col in df_raw_time.columns:
+                df[f'raw_{col}'] = df_raw_time[col]
+        
+        # Restore timestamp for sorting
+        df['timestamp'] = timestamps
+    else:
+        time_extractor_cyclical = TimeExtractor()
+        df = time_extractor_cyclical.fit_transform(df)
+        
+    # 5. Time Sorting (Only for Training/CV)
+    if sort_by_time and 'timestamp' in df.columns:
         df = df.sort_values(by='timestamp', na_position='first')
         
     return df, source_transformer

@@ -10,12 +10,13 @@ from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.exceptions import ConvergenceWarning
 
 # Import Preprocessing
-from preprocessing import (
+from .preprocessing import (
     DatasetCleaner, DatasetDeduplicator, FeatureExtractor, 
-    TimeExtractor, PageRankOneHot, SourceTransformer, AdvancedTextCleaner
+    TimeExtractor, PageRankOneHot, SourceTransformer
 )
-from cv_utils import AnchoredTimeSeriesSplit
-from seed import set_global_seed
+
+from .cv_utils import AnchoredTimeSeriesSplit
+from .seed import set_global_seed
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
@@ -81,11 +82,19 @@ def evaluate(pipeline, X, y, state_name, model_name):
     return np.mean(scores)
 
 def run_ablation():
+    import os
     set_global_seed(42)
+    
+    # Create output directory
+    os.makedirs('results/ablation', exist_ok=True)
+    
     print("="*100)
     print("INCREMENTAL ABLATION STUDY: [CMB, MNB, LinearSVC]")
     print(f"{'State':<35} | {'MNB':<10} | {'CMB':<10} | {'LinearSVC':<10}")
     print("="*100)
+    
+    # Store results for saving
+    all_results = []
     
     # 0. Load Raw
     df = pd.read_csv("./dataset/development.csv")
@@ -110,6 +119,14 @@ def run_ablation():
             results[name] = score
             
         print(f"{step_name:<35} | {results['MultinomialNB']:.4f}     | {results['ComplementNB']:.4f}     | {results['LinearSVC']:.4f}")
+        
+        # Store for CSV
+        all_results.append({
+            'Step': step_name,
+            'MNB_F1': results['MultinomialNB'],
+            'CNB_F1': results['ComplementNB'],
+            'LinearSVC_F1': results['LinearSVC']
+        })
 
     # ----------------------------------------------------------------
     # State 1: Baseline (Raw Text)
@@ -168,6 +185,14 @@ def run_ablation():
     time_ext = TimeExtractor()
     df = time_ext.fit_transform(df)
     run_step(df, "8. + Time (Full Pipeline)", use_all_features=True)
+    
+    # Save results
+    results_df = pd.DataFrame(all_results)
+    results_df.to_csv('results/ablation/ablation_results.csv', index=False)
+    
+    print("\n" + "="*100)
+    print(f"Results saved to results/ablation/ablation_results.csv")
+    print("="*100)
 
 if __name__ == "__main__":
     run_ablation()

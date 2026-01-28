@@ -13,7 +13,13 @@ from sklearn.svm import LinearSVC
 from sklearn.linear_model import LogisticRegression
 from sklearn.naive_bayes import MultinomialNB, ComplementNB
 from sklearn.ensemble import HistGradientBoostingClassifier
-from src.preprocessing import SourceTransformer
+from sklearn.feature_selection import SelectKBest, chi2
+from sklearn.preprocessing import FunctionTransformer
+from .preprocessing import SourceTransformer, RawTimeExtractor
+
+def to_dense(x):
+    """Convert sparse matrix to dense array for HGB."""
+    return x.toarray()
 
 # Load hyperparameters
 def load_best_params(path='best_params.json'):
@@ -110,9 +116,9 @@ def get_pipelines(models=None, params=None):
         
         pipe_svc = Pipeline([
             ('src_gen', SourceTransformer(top_k=300)),
-            ('prep', make_column_transformer(svc_steps, feature_pattern=r'^(?:is_missing_|rank_|src_).*')),
+            ('prep', make_column_transformer(svc_steps, feature_pattern=r'^(?:hour_|day_|week_|month_|quarter_|year_|is_missing_|rank_|src_).*')),
             ('clf', svc_base)
-        ])
+        ], memory='.cache')
         pipelines.append(('svc', pipe_svc))
     
     # Logistic Regression Pipeline
@@ -122,25 +128,26 @@ def get_pipelines(models=None, params=None):
             ('src_gen', SourceTransformer(top_k=300)),
             ('prep', make_column_transformer(lr_steps, feature_pattern=r'^(?:is_missing_|rank_|src_).*')),
             ('clf', LogisticRegression(class_weight='balanced', solver='saga', random_state=42, max_iter=2500))
-        ])
+        ], memory='.cache')
         pipe_lr.set_params(**params.get('lr', {}))
         pipelines.append(('lr', pipe_lr))
     
-    # HistGradientBoosting Pipeline (includes time features)
+    # HistGradientBoosting Pipeline 
     if 'hgb' in models:
         hgb_steps = [
             ('vec', TfidfVectorizer(**tfidf_args)),
-            ('svd', TruncatedSVD(n_components=400, random_state=42))
+            ('sel', SelectKBest(chi2, k=5000)),
+            ('svd', TruncatedSVD(n_components=300, random_state=42))
         ]
         hgb_ct = make_column_transformer(
             hgb_steps,
-            feature_pattern=r'^(?:hour_|day_|month_|week_|is_missing_|rank_|src_).*'
+            feature_pattern=r'^(?:raw_hour|raw_day_of_week|raw_month|raw_quarter|raw_year_offset|is_missing_|rank_|src_).*'
         )
         pipe_hgb = Pipeline([
             ('src_gen', SourceTransformer(top_k=300)),
             ('prep', hgb_ct),
             ('clf', HistGradientBoostingClassifier(class_weight='balanced', random_state=42))
-        ])
+        ], memory='.cache')
         pipe_hgb.set_params(**params.get('hgbc', {}))
         pipelines.append(('hgb', pipe_hgb))
     
@@ -155,7 +162,7 @@ def get_pipelines(models=None, params=None):
             ('src_gen', SourceTransformer(top_k=300)),
             ('prep', mnb_ct),
             ('clf', MultinomialNB(alpha=0.1))
-        ])
+        ], memory='.cache')
         pipelines.append(('mnb', pipe_mnb))
     
     # ComplementNB Pipeline (same features as MNB)
@@ -169,7 +176,7 @@ def get_pipelines(models=None, params=None):
             ('src_gen', SourceTransformer(top_k=300)),
             ('prep', cnb_ct),
             ('clf', ComplementNB(alpha=0.1))
-        ])
+        ], memory='.cache')
         pipelines.append(('cnb', pipe_cnb))
     
     return pipelines

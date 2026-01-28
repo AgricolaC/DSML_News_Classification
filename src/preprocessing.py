@@ -1,21 +1,8 @@
 import pandas as pd
 import numpy as np
 import re
-from bs4 import BeautifulSoup
-import ftfy
-import nltk
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
 from sklearn.base import BaseEstimator, TransformerMixin
-
-try:
-    nltk.data.find('corpora/stopwords')
-    nltk.data.find('corpora/wordnet')
-    nltk.data.find('corpora/omw-1.4')
-except LookupError:
-    nltk.download('stopwords', quiet=True)
-    nltk.download('wordnet', quiet=True)
-    nltk.download('omw-1.4', quiet=True)
+import ftfy
 
 class DatasetCleaner(BaseEstimator, TransformerMixin):
     """
@@ -201,6 +188,8 @@ class TimeExtractor(BaseEstimator, TransformerMixin):
     """
     Extracts cyclical temporal features from a timestamp column.
     
+    New: Adds year_offset (fitted on train), quarter, and is_weekend.
+    
     Parameters:
     ----------
     date_col : str, default='timestamp'
@@ -208,8 +197,14 @@ class TimeExtractor(BaseEstimator, TransformerMixin):
     """
     def __init__(self, date_col='timestamp'):
         self.date_col = date_col
+        self.median_year_ = None  # Fitted on train
 
     def fit(self, X, y=None):
+        """Learn median year from training data for symmetric year normalization."""
+        dates = pd.to_datetime(X[self.date_col], errors='coerce')
+        valid_dates = dates[dates.notna()]
+        
+        self.median_year_ = int(valid_dates.dt.year.median())
         return self
 
     def transform(self, X):
@@ -218,7 +213,7 @@ class TimeExtractor(BaseEstimator, TransformerMixin):
         # Ensure it is datetime
         dates = pd.to_datetime(X[self.date_col], errors='coerce')
         
-        # Hour
+        # Hour (0-23)
         hours = dates.dt.hour
         X['hour_sin'] = np.sin(2 * np.pi * hours / 24)
         X['hour_cos'] = np.cos(2 * np.pi * hours / 24)
@@ -228,148 +223,89 @@ class TimeExtractor(BaseEstimator, TransformerMixin):
         X['day_sin'] = np.sin(2 * np.pi * dow / 7)
         X['day_cos'] = np.cos(2 * np.pi * dow / 7)
 
-        # Helper for missing dates
-        X['is_missing_date'] = dates.isna().astype(int)
-
         # Week (1-53)
         week = dates.dt.isocalendar().week.astype(float)
         X['week_sin'] = np.sin(2 * np.pi * week / 53)
         X['week_cos'] = np.cos(2 * np.pi * week / 53)
 
-        # Month
+        # Month (1-12)
         month = dates.dt.month
         X['month_sin'] = np.sin(2 * np.pi * month / 12)
         X['month_cos'] = np.cos(2 * np.pi * month / 12)
-
-        valid_mask = dates.notna()
         
-        cols_to_fill = ['hour_sin', 'hour_cos', 'day_sin', 'day_cos', 'month_sin', 'month_cos', 'week_sin', 'week_cos']
+        # Quarter (1-4, cyclical)
+        quarter = dates.dt.quarter
+        X['quarter_sin'] = np.sin(2 * np.pi * quarter / 4)
+        X['quarter_cos'] = np.cos(2 * np.pi * quarter / 4)
+        
+        # Year Offset (median-based, symmetric distribution)
+        # Use 0 for missing dates (assumes median period)
+        # Negative = before median, Positive = after median
+        year = dates.dt.year
+        X['year_offset'] = ((year - self.median_year_).fillna(0)).astype(int)
+
+        # Missing date indicator
+        X['is_missing_date'] = dates.isna().astype(int)
+
+        # Fill NaN values for all time features (for missing timestamps)
+        cols_to_fill = [
+            'hour_sin', 'hour_cos', 'day_sin', 'day_cos', 
+            'month_sin', 'month_cos', 'week_sin', 'week_cos',
+            'quarter_sin', 'quarter_cos'
+        ]
         X[cols_to_fill] = X[cols_to_fill].fillna(0)
 
         X = X.drop(columns=[self.date_col])
         return X
 
-class AdvancedTextCleaner(BaseEstimator, TransformerMixin):
+class RawTimeExtractor(BaseEstimator, TransformerMixin):
     """
-    Advanced text cleaning using BeautifulSoup4 and NLTK.
+    Extracts raw temporal features for models with native NaN handling (e.g., HGB).
     
-    **IMPORTANT**: This cleaner is ONLY for explainability/analysis.
-    Do NOT use in production ensemble (ensemble.py, ablation.py).
-    
-    Features:
-    - BeautifulSoup4 HTML parsing (more robust than regex)
-    - URL normalization and extraction
-    - Optional lemmatization
-    - Text normalization (ftfy)
+    Unlike TimeExtractor, this keeps NaN values instead of filling them,
+    allowing models like HistGradientBoosting to treat missing timestamps
+    as a separate category.
     
     Parameters:
     ----------
-    text_col : str, default='final_text'
-        Name of the column containing text to clean.
-    use_lemmatization : bool, default=True
-        If True, applies NLTK WordNet lemmatization.
-    verbose : bool, default=False
-        If True, prints progress of the cleaning operation.
+    date_col : str, default='timestamp'
+        Name of the timestamp column to extract features from.
     """
-    def __init__(self, text_col='final_text', use_lemmatization=True, verbose=False):
-        self.text_col = text_col
-        self.use_lemmatization = use_lemmatization
-        self.verbose = verbose
-        self.lemmatizer = None
+    def __init__(self, date_col='timestamp'):
+        self.date_col = date_col
+        self.median_year_ = None
 
     def fit(self, X, y=None):
-        if self.use_lemmatization:
-            try:
-                from nltk.stem import WordNetLemmatizer
-                import nltk
-                # Download required resources if not present
-                try:
-                    nltk.data.find('corpora/wordnet')
-                except LookupError:
-                    if self.verbose:
-                        print("[AdvancedTextCleaner] Downloading WordNet corpus...")
-                    nltk.download('wordnet', quiet=not self.verbose)
-                    nltk.download('omw-1.4', quiet=not self.verbose)
-                
-                self.lemmatizer = WordNetLemmatizer()
-            except ImportError:
-                if self.verbose:
-                    print("[AdvancedTextCleaner] Warning: NLTK not installed. Lemmatization disabled.")
-                self.lemmatizer = None
+        """Learn median year from training data for symmetric year normalization."""
+        dates = pd.to_datetime(X[self.date_col], errors='coerce')
+        valid_dates = dates[dates.notna()]
+        
+        self.median_year_ = int(valid_dates.dt.year.median())
         return self
 
     def transform(self, X):
         X = X.copy()
-        if self.text_col in X.columns:
-            if self.verbose:
-                print("[AdvancedTextCleaner] Starting advanced cleaning (BeautifulSoup4 + Lemmatization)...")
-            X[self.text_col] = X[self.text_col].astype(str).apply(self._clean_text)
+        
+        # Ensure it is datetime
+        dates = pd.to_datetime(X[self.date_col], errors='coerce')
+        
+        # Extract raw time features (keep NaN for missing)
+        X['hour'] = dates.dt.hour
+        X['day_of_week'] = dates.dt.dayofweek
+        X['month'] = dates.dt.month
+        X['quarter'] = dates.dt.quarter
+        
+        # Year offset (median-based, keep NaN for missing - HGB handles it)
+        year = dates.dt.year
+        X['year_offset'] = (year - self.median_year_)
+        
+        # Missing date indicator (still useful as explicit feature)
+        X['is_missing_date'] = dates.isna().astype(int)
+        
+        X = X.drop(columns=[self.date_col])
         return X
 
-    def _clean_text(self, text):
-        if pd.isna(text):
-            return ""
-        text = str(text)
-        
-        try:
-            from bs4 import BeautifulSoup
-        except ImportError:
-            # Fallback to regex if BS4 not installed
-            return self._clean_text_fallback(text)
-        
-        # 1. Extract URLs before HTML parsing
-        urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
-        
-        # 2. Parse HTML with BeautifulSoup (more robust than regex)
-        soup = BeautifulSoup(text, 'lxml')
-        clean_text = soup.get_text(separator=' ', strip=True)
-        
-        # 3. Normalize URLs (keep domain only)
-        normalized_urls = []
-        for url in urls:
-            try:
-                from urllib.parse import urlparse
-                domain = urlparse(url).netloc
-                if domain:
-                    normalized_urls.append(domain)
-            except:
-                normalized_urls.append(url)
-        
-        # 4. Combine text with URL domains
-        final_content = clean_text + " " + " ".join(normalized_urls)
-        
-        # 5. Lemmatization (if enabled)
-        if self.use_lemmatization and self.lemmatizer:
-            tokens = final_content.split()
-            lemmatized = [self.lemmatizer.lemmatize(token.lower()) for token in tokens]
-            final_content = " ".join(lemmatized)
-        
-        # 6. Fix text encoding issues
-        final_content = ftfy.fix_text(final_content)
-        
-        # 7. Normalize whitespace
-        final_content = re.sub(r'\s+', ' ', final_content).strip()
-        
-        return final_content
-    
-    def _clean_text_fallback(self, text):
-        """Fallback to regex-based cleaning if BeautifulSoup not available."""
-        if pd.isna(text):
-            return ""
-        text = str(text)
-        
-        # Extract URLs
-        urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
-        
-        # Strip HTML Tags with regex
-        clean_text = re.sub(r'<[^>]+>', ' ', text)
-        
-        # Append extracted URLs
-        final_content = clean_text + " " + " ".join(urls)
-        
-        # Normalize
-        final_content = ftfy.fix_text(final_content)
-        return re.sub(r'\s+', ' ', final_content).strip()
+
 
 
 class PageRankOneHot(BaseEstimator, TransformerMixin):
@@ -384,11 +320,8 @@ class PageRankOneHot(BaseEstimator, TransformerMixin):
 
     def transform(self, X):
         X = X.copy()
-        # Ensure numeric first (handled by DatasetCleaner, but safe to double check)
         ranks = pd.to_numeric(X[self.rank_col], errors='coerce').fillna(0).astype(int)
         
-        # Create Dummy Columns for ranks 1-5
-        # We process manually to ensure all columns exist even if a rank is missing in a specific batch
         for r in range(1, 6):
             X[f'rank_{r}'] = (ranks == r).astype(int)
             
@@ -423,13 +356,11 @@ class SourceTransformer(BaseEstimator, TransformerMixin):
         if 'source' not in X.columns:
             return X
             
-        # Mask everything else as 'Other'
         X['source_clean'] = X['source'].where(X['source'].isin(self.top_sources_), 'Other')
         
         # One-Hot Encode
         dummies = pd.get_dummies(X['source_clean'], prefix='src')
         
-        # Ensure we have consistent columns (align with fitted top_sources + Other)
         # Ensure we have consistent columns (align with fitted top_sources + Other)
         expected_cols = [f'src_{s}' for s in self.top_sources_] + ['src_Other']
         
