@@ -215,11 +215,11 @@ if __name__ == "__main__":
     print("\n" + "="*60)
     print("ANALYSIS A: VOCABULARY ANALYSIS")
     print("="*60)
-    for i in range(6):
+    for i in range(7):
         print(f"Plotting coefficients for Class {i}...")
         interpreter.plot_top_coefficients(class_label=i)     
     check_metadata_importance(voting, X_val, y_val)
-    audit_errors(voting_ensemble, X_val, y_val)
+    audit_errors(voting, X_val, y_val)
     
     print("\n[Done] Explainability Report Generated.")
     print("Results saved to results/explainability/")
