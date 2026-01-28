@@ -251,46 +251,126 @@ class TimeExtractor(BaseEstimator, TransformerMixin):
 
 class AdvancedTextCleaner(BaseEstimator, TransformerMixin):
     """
-    Performs text cleaning and normalization.
+    Advanced text cleaning using BeautifulSoup4 and NLTK.
+    
+    **IMPORTANT**: This cleaner is ONLY for explainability/analysis.
+    Do NOT use in production ensemble (ensemble.py, ablation.py).
+    
+    Features:
+    - BeautifulSoup4 HTML parsing (more robust than regex)
+    - URL normalization and extraction
+    - Optional lemmatization
+    - Text normalization (ftfy)
     
     Parameters:
     ----------
     text_col : str, default='final_text'
         Name of the column containing text to clean.
+    use_lemmatization : bool, default=True
+        If True, applies NLTK WordNet lemmatization.
     verbose : bool, default=False
         If True, prints progress of the cleaning operation.
     """
-    def __init__(self, text_col='final_text', verbose=False):
+    def __init__(self, text_col='final_text', use_lemmatization=True, verbose=False):
         self.text_col = text_col
+        self.use_lemmatization = use_lemmatization
         self.verbose = verbose
+        self.lemmatizer = None
 
     def fit(self, X, y=None):
+        if self.use_lemmatization:
+            try:
+                from nltk.stem import WordNetLemmatizer
+                import nltk
+                # Download required resources if not present
+                try:
+                    nltk.data.find('corpora/wordnet')
+                except LookupError:
+                    if self.verbose:
+                        print("[AdvancedTextCleaner] Downloading WordNet corpus...")
+                    nltk.download('wordnet', quiet=not self.verbose)
+                    nltk.download('omw-1.4', quiet=not self.verbose)
+                
+                self.lemmatizer = WordNetLemmatizer()
+            except ImportError:
+                if self.verbose:
+                    print("[AdvancedTextCleaner] Warning: NLTK not installed. Lemmatization disabled.")
+                self.lemmatizer = None
         return self
 
     def transform(self, X):
         X = X.copy()
         if self.text_col in X.columns:
             if self.verbose:
-                print("[AdvancedTextCleaner] Starting text cleaning (URL Extraction + HTML Strip)...")
+                print("[AdvancedTextCleaner] Starting advanced cleaning (BeautifulSoup4 + Lemmatization)...")
             X[self.text_col] = X[self.text_col].astype(str).apply(self._clean_text)
         return X
 
     def _clean_text(self, text):
-        if pd.isna(text): return ""
+        if pd.isna(text):
+            return ""
         text = str(text)
         
-        # 1. Extract URLs to keep the fingerprint
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:
+            # Fallback to regex if BS4 not installed
+            return self._clean_text_fallback(text)
+        
+        # 1. Extract URLs before HTML parsing
         urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
         
-        # 2. Strip HTML Tags completely
+        # 2. Parse HTML with BeautifulSoup (more robust than regex)
+        soup = BeautifulSoup(text, 'lxml')
+        clean_text = soup.get_text(separator=' ', strip=True)
+        
+        # 3. Normalize URLs (keep domain only)
+        normalized_urls = []
+        for url in urls:
+            try:
+                from urllib.parse import urlparse
+                domain = urlparse(url).netloc
+                if domain:
+                    normalized_urls.append(domain)
+            except:
+                normalized_urls.append(url)
+        
+        # 4. Combine text with URL domains
+        final_content = clean_text + " " + " ".join(normalized_urls)
+        
+        # 5. Lemmatization (if enabled)
+        if self.use_lemmatization and self.lemmatizer:
+            tokens = final_content.split()
+            lemmatized = [self.lemmatizer.lemmatize(token.lower()) for token in tokens]
+            final_content = " ".join(lemmatized)
+        
+        # 6. Fix text encoding issues
+        final_content = ftfy.fix_text(final_content)
+        
+        # 7. Normalize whitespace
+        final_content = re.sub(r'\s+', ' ', final_content).strip()
+        
+        return final_content
+    
+    def _clean_text_fallback(self, text):
+        """Fallback to regex-based cleaning if BeautifulSoup not available."""
+        if pd.isna(text):
+            return ""
+        text = str(text)
+        
+        # Extract URLs
+        urls = re.findall(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', text)
+        
+        # Strip HTML Tags with regex
         clean_text = re.sub(r'<[^>]+>', ' ', text)
         
-        # 3. Append extracted URLs to the end
+        # Append extracted URLs
         final_content = clean_text + " " + " ".join(urls)
         
-        # 4. Normalize Whitespace and fix safe text
+        # Normalize
         final_content = ftfy.fix_text(final_content)
         return re.sub(r'\s+', ' ', final_content).strip()
+
 
 class PageRankOneHot(BaseEstimator, TransformerMixin):
     """
@@ -350,14 +430,17 @@ class SourceTransformer(BaseEstimator, TransformerMixin):
         dummies = pd.get_dummies(X['source_clean'], prefix='src')
         
         # Ensure we have consistent columns (align with fitted top_sources + Other)
+        # Ensure we have consistent columns (align with fitted top_sources + Other)
         expected_cols = [f'src_{s}' for s in self.top_sources_] + ['src_Other']
         
-        for col in expected_cols:
-            if col not in dummies.columns:
-                dummies[col] = 0
-                
-        # Filter to only expected columns to avoid train/test mismatch
-        dummies = dummies[expected_cols]
+        # Identify and create missing columns efficiently
+        missing_cols = [col for col in expected_cols if col not in dummies.columns]
+        if missing_cols:
+            missing_data = pd.DataFrame(0, index=dummies.index, columns=missing_cols)
+            dummies = pd.concat([dummies, missing_data], axis=1)
+            
+        # Select columns in correct order using a copy to defragment
+        dummies = dummies[expected_cols].copy()
         
         X = pd.concat([X, dummies], axis=1)
         X = X.drop(columns=['source', 'source_clean'])

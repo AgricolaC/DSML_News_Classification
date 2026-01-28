@@ -10,12 +10,12 @@ from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.exceptions import ConvergenceWarning
 
 # Import Preprocessing
-from src.preprocessing import (
+from preprocessing import (
     DatasetCleaner, DatasetDeduplicator, FeatureExtractor, 
     TimeExtractor, PageRankOneHot, SourceTransformer, AdvancedTextCleaner
 )
-from src.cv_utils import AnchoredTimeSeriesSplit
-from src.seed import set_global_seed
+from cv_utils import AnchoredTimeSeriesSplit
+from seed import set_global_seed
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
@@ -140,17 +140,16 @@ def run_ablation():
     run_step(df, "4. + FeatureExtractor (Tokens)")
 
     # ----------------------------------------------------------------
-    # State 5: + AdvancedTextCleaner (URL/HTML)
+    # State 5: (REMOVED - AdvancedTextCleaner only for explainability)
     # ----------------------------------------------------------------
-    adv = AdvancedTextCleaner(verbose=False)
-    df = adv.fit_transform(df)
-    run_step(df, "5. + AdvTextCleaner (URL+Regex)")
+    # Skipping this state - advanced cleaning not used in production
+    # run_step(df, "5. (SKIPPED - AdvTextCleaner)")
 
     # ----------------------------------------------------------------
     # State 6: + SourceTransformer (Metadata)
     # ----------------------------------------------------------------
     # This adds Dense features. We switch to use_all_features=True
-    src_trans = SourceTransformer(top_k=200)
+    src_trans = SourceTransformer(top_k=300)
     df = src_trans.fit_transform(df)
     run_step(df, "6. + Source (OHE)", use_all_features=True)
 

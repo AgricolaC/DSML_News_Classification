@@ -33,9 +33,11 @@ def run_final_prediction():
     print(f"    Rows: {len(df_dev)}")
     
     print("  Processing Evaluation Set...")
-    ids = df_eval['Id']
     # Explicitly pass the fitted transformer
     df_eval, _ = preprocess_dataset(df_eval, is_train=False, source_transformer=src_transformer)
+    
+    # Extract IDs AFTER preprocessing (which sorts by time) to ensure alignment
+    ids = df_eval['Id']
     print(f"    Rows: {len(df_eval)}")
 
     # 3. Train

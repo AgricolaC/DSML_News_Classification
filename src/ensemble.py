@@ -15,7 +15,6 @@ from preprocessing import DatasetCleaner, DatasetDeduplicator, FeatureExtractor,
 from cv_utils import AnchoredTimeSeriesSplit
 from seed import set_global_seed
 
-# Default Configuration
 BEST_PARAMS = {
     'tfidf': {'ngram_range': (1, 3), 'min_df': 2, 'sublinear_tf': True, 'max_features': 30000, 'lowercase': True},
     'svc': {'clf__C': 0.1},
@@ -43,114 +42,8 @@ def load_params():
     else:
         print("Using Default BEST_PARAMS.")
 
-def get_pipelines():
-    # 1. SVC Pipeline
-    # Tfidf -> SVC
-    tfidf_args = BEST_PARAMS['tfidf']
-    
-    from sklearn.compose import make_column_selector
-    
-    def make_ct(steps):
-        return ColumnTransformer(
-            transformers=[
-                ('txt', Pipeline(steps), 'final_text'),
-                ('dense', 'passthrough', make_column_selector(pattern=r'^(?:hour_|day_|month_|week_|is_missing_|rank_|src_).*'))
-            ],
-            remainder='drop'
-        )
+from models import get_pipelines, load_best_params as load_params_from_models
 
-    # SVC
-    svc_steps = [
-        ('vec', TfidfVectorizer(**tfidf_args)),
-    ]
-
-    # SVC (Raw - will use CalibratedSVC wrapper)
-    svc_base = LinearSVC(class_weight='balanced', random_state=42, dual=False)
-    # Apply BEST_PARAMS to base estimator directly
-    svc_params = {k.replace('clf__', ''): v for k, v in BEST_PARAMS['svc'].items() if k.startswith('clf__')}
-    svc_base.set_params(**svc_params)
-
-    pipe_svc = Pipeline([
-        ('prep', make_ct(svc_steps)),
-        ('clf', svc_base)  # Raw SVC, no nested CV
-    ]) 
-
-    # LR
-    lr_steps = [
-        ('vec', TfidfVectorizer(**tfidf_args))
-    ]
-    pipe_lr = Pipeline([
-        ('prep', make_ct(lr_steps)),
-        ('clf', LogisticRegression(class_weight='balanced', solver='saga', random_state=42, max_iter=2500))
-    ])
-    pipe_lr.set_params(**BEST_PARAMS['lr'])
-
-    # HGB (Gets Time Features - unique to this model)
-    # Tfidf -> SVD -> HGB
-    hgb_steps = [
-        ('vec', TfidfVectorizer(**tfidf_args)),
-        ('svd', TruncatedSVD(n_components=400, random_state=42))
-    ]
-    
-    # Custom CT for HGB: includes time features
-    hgb_ct = ColumnTransformer(
-        transformers=[
-            ('txt', Pipeline(hgb_steps), 'final_text'),
-            ('dense', 'passthrough', make_column_selector(pattern=r'^(?:hour_|day_|month_|week_|is_missing_|rank_|src_).*'))
-        ],
-        remainder='drop'
-    )
-    
-    pipe_hgb = Pipeline([
-        ('prep', hgb_ct),
-        ('clf', HistGradientBoostingClassifier(class_weight='balanced', random_state=42))
-    ])
-    # HGB Params might have prefixes like 'clf__learning_rate'
-    pipe_hgb.set_params(**BEST_PARAMS['hgbc'])
-
-    # MNB (Text + OHE only, No Time Cyclical due to negative values)
-    mnb_steps = [
-        ('vec', TfidfVectorizer(**tfidf_args))
-    ]
-    
-    mnb_ct = ColumnTransformer(
-        transformers=[
-            ('txt', Pipeline(mnb_steps), 'final_text'),
-            ('dense', 'passthrough', make_column_selector(pattern=r'^(?:is_missing_|rank_|src_).*'))
-        ],
-        remainder='drop'
-    )
-    
-    pipe_mnb = Pipeline([
-        ('prep', mnb_ct),
-        ('clf', MultinomialNB(alpha=0.1))
-    ])
-
-    # CNB (Text + OHE only, same as MNB)
-    cnb_steps = [
-        ('vec', TfidfVectorizer(**tfidf_args))
-    ]
-    
-    cnb_ct = ColumnTransformer(
-        transformers=[
-            ('txt', Pipeline(cnb_steps), 'final_text'),
-            ('dense', 'passthrough', make_column_selector(pattern=r'^(?:is_missing_|rank_|src_).*'))
-        ],
-        remainder='drop'
-    )
-    
-    pipe_cnb = Pipeline([
-        ('prep', cnb_ct),
-        ('clf', ComplementNB(alpha=0.1))
-    ])
-
-    return [
-        ('svc', pipe_svc),
-        ('lr', pipe_lr),
-        ('hgb', pipe_hgb),
-        ('mnb', pipe_mnb),
-        ('cnb', pipe_cnb)
-    ]
 
 def preprocess_dataset(df, is_train=True, source_transformer=None):
     """
@@ -174,15 +67,15 @@ def preprocess_dataset(df, is_train=True, source_transformer=None):
     # 3. Text Feature Extractor
     df = FeatureExtractor().transform(df)
     
-    # 3a. Advanced Cleaning (URL Persist + Strip HTML)
-    df = AdvancedTextCleaner().transform(df)
+    # 3a. HTML Removal
+    # df = AdvancedTextCleaner().transform(df)
     
     # 3b. Source Tagging
-    if source_transformer is None:
-        source_transformer = SourceTransformer(top_k=300)
-        df = source_transformer.fit_transform(df)
-    else:
-        df = source_transformer.transform(df)
+    # 3b. Source Tagging (Now handled in Model Pipeline to prevent leakage)
+    # The pipeline step 'src_gen' will handle this.
+    # We do nothing here.
+    if source_transformer is not None:
+         print("Warning: source_transformer argument found but ignored in favor of Pipeline")
 
     # 3c. PageRank One-Hot
     df = PageRankOneHot().transform(df)
@@ -195,13 +88,30 @@ def preprocess_dataset(df, is_train=True, source_transformer=None):
     else:
          df = TimeExtractor().transform(df)
         
+    # 5. Strict Time Sorting for CV
+    if 'timestamp' in df.columns:
+        # Move NaT to the beginning (or end? AnchoredTimeSeriesSplit handles NaT specially)
+        # We want valid dates to be sorted.
+        df = df.sort_values(by='timestamp', na_position='first')
+        
     return df, source_transformer
 
 def get_voting_ensemble():
-    load_params()
-    estimators = get_pipelines()
-    # Use hard voting since raw LinearSVC doesn't have predict_proba
-    return VotingClassifier(estimators=estimators, voting='hard')
+    load_params() # Updates global BEST_PARAMS (legacy, but kept for consistency)
+    
+    all_pipelines = get_pipelines()
+    
+    # Split into Strong (Tier 1) and Weak (Tier 2)
+    strong_models = [p for p in all_pipelines if p[0] in ['svc', 'lr']]
+    weak_models = [p for p in all_pipelines if p[0] in ['hgb', 'mnb', 'cnb']]
+    
+    # Tier 2 Consensus (Internal Vote)
+    weak_ensemble = VotingClassifier(estimators=weak_models, voting='hard')
+    
+    # Tier 1 Final Vote (Strong + Weak_Consensus)
+    final_estimators = strong_models + [('weak_consensus', weak_ensemble)]
+    
+    return VotingClassifier(estimators=final_estimators, voting='hard')
 
 def run_cv_evaluation():
     set_global_seed(42)
@@ -217,7 +127,6 @@ def run_cv_evaluation():
     
     df_dev, _ = preprocess_dataset(df_dev, is_train=True)
 
-    
     ensemble = get_voting_ensemble()
     
     # 3. Validation
@@ -237,10 +146,25 @@ def run_cv_evaluation():
         # Fit Ensemble
         ensemble.fit(X_train, y_train)
         
-        # Evaluate Constituent Models
-        # Note: 'estimators_' stores the fitted estimators
-        model_names = ['LinearSVC', 'LogisticRegression', 'HistGradientBoosting', 'MultinomialNB', 'ComplementNB']
-        for name, model in zip(model_names, ensemble.estimators_):
+        # --- Evaluate Constituent Models ---
+        # Extract fitted models from the hierarchy
+        svc = ensemble.named_estimators_['svc']
+        lr = ensemble.named_estimators_['lr']
+        weak_ens = ensemble.named_estimators_['weak_consensus']
+        hgb = weak_ens.named_estimators_['hgb']
+        mnb = weak_ens.named_estimators_['mnb']
+        cnb = weak_ens.named_estimators_['cnb']
+        
+        models_to_eval = [
+            ('LinearSVC', svc),
+            ('LogisticRegression', lr),
+            ('WeakConsensus', weak_ens),
+            ('  HistGradientBoosting', hgb),
+            ('  MultinomialNB', mnb),
+            ('  ComplementNB', cnb)
+        ]
+        
+        for name, model in models_to_eval:
             pred = model.predict(X_test)
             score = f1_score(y_test, pred, average='macro')
             print(f"  {name}: {score:.4f}")
@@ -248,13 +172,81 @@ def run_cv_evaluation():
         # Evaluate Ensemble
         pred_ensemble = ensemble.predict(X_test)
         score_ensemble = f1_score(y_test, pred_ensemble, average='macro')
-        print(f"  >> Ensemble: {score_ensemble:.4f}")
+        print(f"  >> Ensemble (Hierarchical): {score_ensemble:.4f}")
         
         fold_scores.append(score_ensemble)
     
     scores = np.array(fold_scores)
+    mean_f1 = np.mean(scores)
+    std_f1 = np.std(scores)
     
-    print(f"\nValidation Score: {np.mean(scores):.4f} (+/- {np.std(scores):.4f})")
+    print(f"\nValidation Score: {mean_f1:.4f} (+/- {std_f1:.4f})")
+    
+    # SAVE ARTIFACTS
+    print("\n" + "="*60)
+    print("SAVING RESULTS TO results/ensemble_cv/")
+    print("="*60)
+    
+    import os
+    os.makedirs('results/ensemble_cv', exist_ok=True)
+    
+    # Save fold scores as JSON
+    results_dict = {
+        'mean_f1': float(mean_f1),
+        'std_f1': float(std_f1),
+        'fold_scores': [float(s) for s in fold_scores],
+        'timestamp': pd.Timestamp.now().isoformat(),
+        'n_folds': len(fold_scores),
+        'voting_strategy': 'hierarchical'
+    }
+    
+    with open('results/ensemble_cv/fold_scores.json', 'w') as f:
+        json.dump(results_dict, f, indent=2)
+    print("✓ Saved fold_scores.json")
+    
+    # Generate markdown report
+    report = f"""# Ensemble Cross-Validation Results
+
+**Generated:** {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## Summary
+
+- **Mean F1 Score:** {mean_f1:.4f} ± {std_f1:.4f}
+- **Voting Strategy:** Hierarchical (SVC=1, LR=1, [HGB+MNB+CNB]=1)
+- **Number of Folds:** {len(fold_scores)}
+- **Data Sorting:** Strict Timestamp
+
+## Fold Scores
+
+| Fold | F1 Score |
+|------|----------|
+"""
+    for i, score in enumerate(fold_scores, 1):
+        report += f"| {i} | {score:.4f} |\n"
+    
+    report += f"""
+## Configuration
+
+- **Preprocessing:** DatasetCleaner + DatasetDeduplicator + FeatureExtractor + TimeExtractor + **TimeSort**
+- **Structure:**
+  - **Tier 1 (Final Vote):** LinearSVC, LogisticRegression, WeakConsensus
+  - **Tier 2 (WeakConsensus):** HistGradientBoosting, MultinomialNB, ComplementNB
+- **Feature Distribution:**
+  - HGB: Text + Density + Time + PageRank + Source
+  - SVC/LR: Text + Density + PageRank + Source (No Time)
+  - MNB/CNB: Text + Source (No Time, No PageRank, No Density)
+
+## Notes
+
+Results saved to `results/ensemble_cv/fold_scores.json`.
+"""
+    
+    with open('results/ensemble_cv/cv_report.md', 'w') as f:
+        f.write(report)
+    print("✓ Saved cv_report.md")
+    
+    print(f"\nArtifacts saved successfully!")
+
 
 if __name__ == "__main__":
     run_cv_evaluation()
