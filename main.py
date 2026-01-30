@@ -4,8 +4,6 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
-
 from src.ensemble import preprocess_dataset, get_voting_ensemble, load_params
 from src.seed import set_global_seed
 
@@ -35,8 +33,8 @@ def run_final_prediction():
         ids = df_eval['Id'].copy()
         
         # Sort training data by time (for CV), but preserve eval order (for submission)
-        df_dev, src_transformer = preprocess_dataset(df_dev, is_train=True, sort_by_time=True)
-        df_eval, _ = preprocess_dataset(df_eval, is_train=False, source_transformer=src_transformer, sort_by_time=False)
+        df_dev, src_transformer = preprocess_dataset(df_dev, is_train=True, verbose=False)
+        df_eval, _ = preprocess_dataset(df_eval, is_train=False, source_transformer=src_transformer, verbose=False)
         pbar.update(1)
 
         # 3. Train

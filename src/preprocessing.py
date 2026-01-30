@@ -10,6 +10,7 @@ class DatasetCleaner(BaseEstimator, TransformerMixin):
     remove artifacts like "\N" or "\\" before any feature engineering happens. 
     We also use the 'ftfy' library that helps fix encoding errors in text.
     """
+
     def __init__(self, text_cols=['source', 'title', 'article'], 
                  date_col='timestamp', rank_col='page_rank', verbose=False):
         self.text_cols = text_cols
@@ -74,7 +75,7 @@ class DatasetDeduplicator(BaseEstimator, TransformerMixin):
     def __init__(self, mode='advanced', verbose=True):
         self.mode = mode
         self.verbose = verbose
-        self.content_cols = ['title', 'article', 'source']
+        self.content_cols = ['title', 'article']
         
         # Validate mode
         valid_modes = ['advanced', 'simple', 'none']
@@ -103,37 +104,28 @@ class DatasetDeduplicator(BaseEstimator, TransformerMixin):
             return X
 
         # Mode 3: Advanced Deduplication
-        # Specific > Generic (Class 5), Conflict Resolution, Time sort.
+        # Strict logic: Drop ALL conflicting labels, Keep Earliest timestamp for matches.
         if self.mode == 'advanced':
             if 'label' not in X.columns:
                 if self.verbose:
                     print("[DatasetDeduplicator] No 'label' column found. Skipping deduplication")
                 return X
             
-            X['is_generic_label'] = (X['label'] == 5)
-            # We sort the rows to line them up for drop_duplicates later. 
-            # The logic is that we sort by title, grouping identical articles together,
-            # then we sort by is_generic_label and since false < true this puts specific labels on top and generic labels below them.
-            # if both articles have the same label type, we put the earliest article first.
-            X = X.sort_values(
-                by=['title', 'is_generic_label', 'timestamp'], 
-                ascending=[True, True, True]
-            )
-            has_specific_label_mask = X['label'] != 5
-            rows_with_specific_labels = X[has_specific_label_mask]
-            # For every unique article content, we count how many different specific labels exist. 
-            # If the result is bigger than one, it means we have a contradiction. We aim to identify these contradictions.
-            label_counts = rows_with_specific_labels.groupby(self.content_cols)['label'].nunique()
-            content_with_contradictions = label_counts[label_counts > 1].index
-            # We remove the data with contradiction entirely.
-            if len(content_with_contradictions) > 0:
+            # Sort by Content and Time (Earliest first)
+            X = X.sort_values(by=['title', 'timestamp'], ascending=[True, True])
+
+            # Group by content -> Check number of unique labels
+            label_counts = X.groupby(self.content_cols)['label'].nunique()
+            conflicting_content = label_counts[label_counts > 1].index
+            
+            # Drop Conflicts
+            if len(conflicting_content) > 0:
                 if self.verbose:
-                    print(f"[DatasetDeduplicator] Dropping {len(content_with_contradictions)} articles with impossible label conflicts.")
-                X = X.set_index(self.content_cols).drop(index=content_with_contradictions).reset_index()    
-            # Final deduplication. It ties to our sorting step earlier which enables us to keep
-            # Articles with specific labels and discard their generic duplicate.
+                    print(f"[DatasetDeduplicator] Dropping {len(conflicting_content)} content groups with conflicting labels.")
+                X = X.set_index(self.content_cols).drop(index=conflicting_content).reset_index()    
+            
+            # 4. Deduplicate (Keep Earliest)
             X = X.drop_duplicates(subset=self.content_cols, keep='first')
-            X = X.drop(columns=['is_generic_label'])
 
             if self.verbose:
                 print(f"[DatasetDeduplicator] Mode='advanced': Removed {initial_count - len(X)} rows total.")
@@ -154,26 +146,21 @@ class FeatureExtractor(BaseEstimator, TransformerMixin):
     def transform(self, X):
         X = X.copy()
         
-        # Source Tokenization (Lowercase, handle NaN)
         # We have to fill NaN with empty strings so the function doesn't crash.
         X['source'] = X['source'].fillna('')
         source_tokens = X['source'].apply(self._tokenize_source)
         
-        # 2. Handle Text Missingness with explicit tokens
+        # Handle Text Missingness with explicit tokens
         X['title'] = X['title'].fillna('title_unknown').replace('', 'title_unknown')
         X['article'] = X['article'].fillna('article_unknown').replace('', 'article_unknown')
         
-        # 3. Concatenate
+        # Concatenate
         X['final_text'] = source_tokens + " " + X['title'] + " " + X['article']
         return X
 
     def _tokenize_source(self, text):
         if not text:
             return "src_unknown"
-        # Standardize: Lowercase + Alphanumeric
-        # by using this regex statement, we replace any character that is NOT a lowecase letter 
-        # or a number with ''. 
-        # The N.Y. Times -> thenytimes
         clean = re.sub(r'[^a-z0-9]', '', str(text).lower())
         if not clean:
             return "src_unknown"
@@ -188,13 +175,6 @@ class TimeExtractor(BaseEstimator, TransformerMixin):
         self.median_year_ = None  # Fitted on train
 
     def fit(self, X, y=None):
-        # We have to pass year features (which are non-cyclical) carefully.
-        # If we fit the model on development set and the evaluation set has unknown years
-        # we have to make sure our .transform is able to somehow work with this value
-        # and not break down. Our methodology aims to treat the year in a [-inf,inf] range.
-        # We want to find the median year of the development data, and every new data that is 
-        # evaluated (from the development or evaluation set) will be a -/+ (or 0) integer value 
-        # depending on their year.
         dates = pd.to_datetime(X[self.date_col], errors='coerce')
         valid_dates = dates[dates.notna()]
         
@@ -292,14 +272,15 @@ class RawTimeExtractor(BaseEstimator, TransformerMixin):
         X = X.drop(columns=[self.date_col])
         return X
 
-
-
-
-class PageRankOneHot(BaseEstimator, TransformerMixin):
+class PageRankTransformer(BaseEstimator, TransformerMixin):
     """
-    One-Hot encodes the PageRank column (1-5), treating it as categorical.
+    Encodes the PageRank column.
+    
+    'onehot': One-Hot encodes (1-5), treating it as categorical.
+    'ordinal': Keeps it as a single integer column (0-5).
     """
-    def __init__(self, rank_col='page_rank'):
+    def __init__(self, mode='onehot', rank_col='page_rank'):
+        self.mode = mode
         self.rank_col = rank_col
 
     def fit(self, X, y=None):
@@ -309,8 +290,12 @@ class PageRankOneHot(BaseEstimator, TransformerMixin):
         X = X.copy()
         ranks = pd.to_numeric(X[self.rank_col], errors='coerce').fillna(0).astype(int)
         
-        for r in range(1, 6):
-            X[f'rank_{r}'] = (ranks == r).astype(int)
+        if self.mode == 'onehot':
+            for r in range(1, 6):
+                X[f'rank_{r}'] = (ranks == r).astype(int)
+        elif self.mode == 'ordinal':
+            # Name must start with 'rank_' to be picked up by model regex
+            X['rank_ordinal'] = ranks
             
         if self.rank_col in X.columns:
             X = X.drop(columns=[self.rank_col])

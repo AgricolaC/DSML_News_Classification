@@ -1,0 +1,54 @@
+{
+  "model": "hgb",
+  "best_params": {
+    "clf__l2_regularization": 10.0,
+    "clf__learning_rate": 0.1,
+    "clf__max_depth": null,
+    "clf__max_leaf_nodes": 63
+  },
+  "best_score": 0.6971425892674784,
+  "cv_results": {
+    "mean_test_score": [
+      0.6959245444360892,
+      0.6942303135109018,
+      0.6952537848766394,
+      0.6955059915361828,
+      0.695468165728712,
+      0.6959781651450131,
+      0.6943177188177283,
+      0.6966064752354337,
+      0.694600503364442,
+      0.6963174408281095,
+      0.694600503364442,
+      0.6971425892674784
+    ],
+    "std_test_score": [
+      0.0021876386906808072,
+      0.003189497813865015,
+      0.0018099811923250702,
+      0.0037601371963477876,
+      0.0015127042328216811,
+      0.003410073013862761,
+      0.0017339857636922364,
+      0.003272704801583247,
+      0.0010972171021776497,
+      0.0015942104546128341,
+      0.0010972171021776497,
+      0.001127259151098912
+    ],
+    "params": [
+      "{'clf__l2_regularization': 1.0, 'clf__learning_rate': 0.1, 'clf__max_depth': 10, 'clf__max_leaf_nodes': 31}",
+      "{'clf__l2_regularization': 1.0, 'clf__learning_rate': 0.1, 'clf__max_depth': 10, 'clf__max_leaf_nodes': 63}",
+      "{'clf__l2_regularization': 1.0, 'clf__learning_rate': 0.1, 'clf__max_depth': 20, 'clf__max_leaf_nodes': 31}",
+      "{'clf__l2_regularization': 1.0, 'clf__learning_rate': 0.1, 'clf__max_depth': 20, 'clf__max_leaf_nodes': 63}",
+      "{'clf__l2_regularization': 1.0, 'clf__learning_rate': 0.1, 'clf__max_depth': None, 'clf__max_leaf_nodes': 31}",
+      "{'clf__l2_regularization': 1.0, 'clf__learning_rate': 0.1, 'clf__max_depth': None, 'clf__max_leaf_nodes': 63}",
+      "{'clf__l2_regularization': 10.0, 'clf__learning_rate': 0.1, 'clf__max_depth': 10, 'clf__max_leaf_nodes': 31}",
+      "{'clf__l2_regularization': 10.0, 'clf__learning_rate': 0.1, 'clf__max_depth': 10, 'clf__max_leaf_nodes': 63}",
+      "{'clf__l2_regularization': 10.0, 'clf__learning_rate': 0.1, 'clf__max_depth': 20, 'clf__max_leaf_nodes': 31}",
+      "{'clf__l2_regularization': 10.0, 'clf__learning_rate': 0.1, 'clf__max_depth': 20, 'clf__max_leaf_nodes': 63}",
+      "{'clf__l2_regularization': 10.0, 'clf__learning_rate': 0.1, 'clf__max_depth': None, 'clf__max_leaf_nodes': 31}",
+      "{'clf__l2_regularization': 10.0, 'clf__learning_rate': 0.1, 'clf__max_depth': None, 'clf__max_leaf_nodes': 63}"
+    ]
+  }
+}

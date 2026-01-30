@@ -86,7 +86,7 @@ def get_pipelines(models=None, params=None):
             ('src_gen', SourceTransformer(top_k=300)),
             ('prep', make_column_transformer(svc_steps, feature_pattern=r'^(?:hour_|day_|week_|month_|quarter_|year_|is_missing_|rank_|src_).*')),
             ('clf', svc_base)
-        ], memory='.cache')
+        ])
         pipelines.append(('svc', pipe_svc))
     
     if 'lr' in models:
@@ -95,7 +95,7 @@ def get_pipelines(models=None, params=None):
             ('src_gen', SourceTransformer(top_k=300)),
             ('prep', make_column_transformer(lr_steps, feature_pattern=r'^(?:is_missing_|rank_|src_).*')),
             ('clf', LogisticRegression(class_weight='balanced', solver='saga', random_state=42, max_iter=2500))
-        ], memory='.cache')
+        ])
         pipe_lr.set_params(**params.get('lr', {}))
         pipelines.append(('lr', pipe_lr))
     
@@ -113,7 +113,7 @@ def get_pipelines(models=None, params=None):
             ('src_gen', SourceTransformer(top_k=300)),
             ('prep', hgb_ct),
             ('clf', HistGradientBoostingClassifier(class_weight='balanced', random_state=42))
-        ], memory='.cache')
+        ])
         pipe_hgb.set_params(**params.get('hgbc', {}))
         pipelines.append(('hgb', pipe_hgb))
     
@@ -128,7 +128,7 @@ def get_pipelines(models=None, params=None):
             ('src_gen', SourceTransformer(top_k=300)),
             ('prep', mnb_ct),
             ('clf', MultinomialNB(alpha=0.1))
-        ], memory='.cache')
+        ])
         pipelines.append(('mnb', pipe_mnb))
     
     # ComplementNB Pipeline (same features as MNB)
@@ -142,7 +142,7 @@ def get_pipelines(models=None, params=None):
             ('src_gen', SourceTransformer(top_k=300)),
             ('prep', cnb_ct),
             ('clf', ComplementNB(alpha=0.1))
-        ], memory='.cache')
+        ])
         pipelines.append(('cnb', pipe_cnb))
     
     return pipelines

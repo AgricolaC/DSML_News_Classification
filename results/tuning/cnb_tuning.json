@@ -1,0 +1,53 @@
+{
+  "model": "cnb",
+  "best_params": {
+    "clf__alpha": 0.1,
+    "clf__fit_prior": true,
+    "clf__norm": true
+  },
+  "best_score": 0.6935126713233887,
+  "cv_results": {
+    "mean_test_score": [
+      0.6909205027240471,
+      0.6929200767709519,
+      0.6909205027240471,
+      0.6929200767709519,
+      0.6935126713233887,
+      0.6905570486905361,
+      0.6935126713233887,
+      0.6905570486905361,
+      0.6889153853042052,
+      0.685633716199236,
+      0.6889153853042052,
+      0.685633716199236
+    ],
+    "std_test_score": [
+      0.0008010892543605203,
+      0.002882708254554173,
+      0.0008010892543605203,
+      0.002882708254554173,
+      0.001483349224964515,
+      0.0026806051267808913,
+      0.001483349224964515,
+      0.0026806051267808913,
+      0.0031454801341021534,
+      0.0027284948886449516,
+      0.0031454801341021534,
+      0.0027284948886449516
+    ],
+    "params": [
+      "{'clf__alpha': 0.01, 'clf__fit_prior': True, 'clf__norm': True}",
+      "{'clf__alpha': 0.01, 'clf__fit_prior': True, 'clf__norm': False}",
+      "{'clf__alpha': 0.01, 'clf__fit_prior': False, 'clf__norm': True}",
+      "{'clf__alpha': 0.01, 'clf__fit_prior': False, 'clf__norm': False}",
+      "{'clf__alpha': 0.1, 'clf__fit_prior': True, 'clf__norm': True}",
+      "{'clf__alpha': 0.1, 'clf__fit_prior': True, 'clf__norm': False}",
+      "{'clf__alpha': 0.1, 'clf__fit_prior': False, 'clf__norm': True}",
+      "{'clf__alpha': 0.1, 'clf__fit_prior': False, 'clf__norm': False}",
+      "{'clf__alpha': 1.0, 'clf__fit_prior': True, 'clf__norm': True}",
+      "{'clf__alpha': 1.0, 'clf__fit_prior': True, 'clf__norm': False}",
+      "{'clf__alpha': 1.0, 'clf__fit_prior': False, 'clf__norm': True}",
+      "{'clf__alpha': 1.0, 'clf__fit_prior': False, 'clf__norm': False}"
+    ]
+  }
+}

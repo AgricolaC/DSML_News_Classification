@@ -1,7 +1,7 @@
 # News Article Classification
 
 Machine learning pipeline built to classify news articles into 7 categories.
-This project implements a Hierarchical Voting Ensemble, combining linear and non-linear classifiers with feature engineering (time extraction, source embeddings,text cleaning) to achieve high-performance text classification.
+This project implements a Hierarchical Voting Ensemble, combining linear and non-linear classifiers with robust feature engineering (source embeddings, text cleaning, strict deduplication) to achieve high-performance text classification.
 
 ---
 
@@ -10,13 +10,12 @@ This project implements a Hierarchical Voting Ensemble, combining linear and non
 ```
 DSML_News_Classification/
 ├── dataset/
-│   ├── development.csv      # Training data (80,000 articles)
+│   ├── development.csv       # Training data (80,000 articles)
 │   └── evaluation.csv        # Test data (20,000 articles)
 ├── src/                      # Source code
-│   ├── preprocessing.py      # Data cleaning, time features, text processing
+│   ├── preprocessing.py      # Data cleaning, deduplication, text processing
 │   ├── models.py             # Model pipelines (SVC, LR, HGB, NB)
 │   ├── ensemble.py           # Hierarchical voting ensemble & CV
-│   ├── cv_utils.py           # Time-series cross-validation
 │   ├── seed.py               # Reproducibility 
 │   ├── tuning.py             # Hyperparameter optimization
 │   ├── ablation.py           # Feature ablation studies
@@ -42,7 +41,6 @@ DSML_News_Classification/
 
 **Prerequisites**: Python 3.11+ and ~2GB RAM.
 The fastest way to run the pipeline and generate predictions is via Poetry:
-
 
 ### Option A: Using Poetry (Recommended)
 
@@ -110,62 +108,70 @@ Place the dataset files in the `dataset/` directory:
 ## 🧠 Model Architecture
 
 ### Ensemble Strategy
-Hierarchical Voting Classifier (5 models):
+Hierarchical Voting Classifier (Hard Voting):
 
-| Model | Weight | Time Features | Description |
-|-------|--------|---------------|-------------|
-| **LinearSVC** | 1 | Cyclical (sin/cos) | Fast, linear decision boundaries |
-| **LogisticRegression** | 1 | None | Content-focused, robust baseline |
-| **HistGradientBoosting** | 1/3 | Raw (NaN-aware) | Non-linear interactions |
-| **MultinomialNB** | 1/3 | None | Probabilistic text classifier |
-| **ComplementNB** | 1/3 | None | Handles imbalanced classes |
+| Model | Role | Weights | Description |
+|-------|------|---------|-------------|
+| **LinearSVC** | Strong Learner | 1 | Fast, linear decision boundaries, heavy metadata lifting |
+| **LogisticRegression** | Strong Learner | 1 | Robust baseline, probabilistic outputs |
+| **Weak Consensus** | Tie-Breaker | 1 | Sub-ensemble of 3 models (HGB + MNB + CNB) |
 
-**Voting**: `LinearSVC(1) + LogisticRegression(1) + [HGB+MNB+CNB](1)`
+**Structure**: `LinearSVC` vs `LogisticRegression` vs `[HGB + MNB + CNB]`
+*The "Weak Consensus" acts as a single voter representing the majority view of the non-linear/probabilistic models.*
 
 ### Feature Engineering
 
 **Text Features**:
-- TF-IDF vectorization (50K vocab, 1-3 grams)
-- Preserves HTML/URLs (contain category-indicative patterns)
-- Source tokenization (e.g., "TechCrunch" → "tech crunch")
+- TF-IDF vectorization (30K vocab, 1-3 grams, sublinear TF)
+- **Source Token Injection**: Source names are tokenized (e.g., `src_reuters`) and injected into the text to capture local context.
 
 **Metadata Features**:
-- **Source OHE**: Top 300 sources (one-hot encoded)
-- **PageRank**: 5-bin categorical encoding
-- **Time Features** (model-specific):
-  - Cyclical: `hour_sin/cos`, `day_sin/cos`, `month_sin/cos`, `week_sin/cos`, `quarter_sin/cos`
-  - Linear: `year_offset` (median-centered)
-  - Indicator: `is_missing_date`
+- **Source OHE**: Top 300 sources (one-hot encoded).
+- **PageRank**: One-hot encoded (Rank 1-5).
+- **Time Features**: **REMOVED**. Extensive ablation studies showed time features (cyclical or raw) introduced noise and degraded performance on this specific dataset.
 
 ### Preprocessing Pipeline
-1. **Cleaning**: Fix encoding issues, detect hidden missing values
-2. **Deduplication**: Remove conflicting duplicates (training only)
-3. **Text Extraction**: Concatenate `source + title + article`, apply source tagging
-4. **Time Extraction**: Extract temporal features (where available)
-5. **Sorting**: Chronological ordering (training only, for CV)
+1. **Cleaning**: Fix encoding (ftfy), standardized artifacts.
+2. **Strict Deduplication**:
+   - **Conflict Drop**: Any content group with >1 unique label ID is dropped entirely (removes ambiguous training signals).
+   - **Chronological Keep**: For non-conflicting duplicates, only the *earliest* timestamp is kept.
+   - **Leakage Prevention**: Deduplication is performed on `[title, article]` only, ignoring `source` to prevent label leakage from syndicated content.
+3. **Text Extraction**: Concatenate `source_token + title + article`.
 
 ### Cross-Validation
-**AnchoredTimeSeriesSplit** (5 folds):
-- Respects temporal order (prevents future info leakage)
-- Expanding window: each fold trains on all previous data
+**StratifiedKFold** (5 folds):
+- Standard stratified splitting to maintain class distribution.
 
 ---
 
 ## 📈 Results
 
 ### Validation Performance
-- **Mean F1 Score**: **0.7577** ± 0.0285
-- **Cross-Validation**: 5-fold time-series split
+- **Mean F1 Score**: **0.7322** ± 0.0017
+- **Cross-Validation**: 5-fold Stratified Shuffle
 
-| Fold | F1 Score | Training Period |
-|------|----------|-----------------|
-| 1 | 0.7023 | Earliest 20% → Next 20% |
-| 2 | 0.7641 | Earliest 40% → Next 20% |
-| 3 | 0.7660 | Earliest 60% → Next 20% |
-| 4 | 0.7834 | Earliest 80% → Last 20% |
-| 5 | 0.7730 | All → Validation |
+| Fold | F1 Score |
+|------|----------|
+| 1 | 0.7321 |
+| 2 | 0.7319 |
+| 3 | 0.7334 |
+| 4 | 0.7293 |
+| 5 | 0.7344 |
 
-- **Public Leaderboard F1**: **0.735**
+### Ablation Summary
+*From `results/ablation/ablation_results.csv`*
+
+*Analysis made for LinearSVC*
+
+| Step | F1 Score (Stratified) | Impact |
+|------|----------------------|--------|
+| Baseline (Raw) | 0.6696 | - |
+| + Cleaner & Dedup | 0.6781 | +0.85% |
+| + Features & Source | 0.7236 | +4.55% |
+| + PageRank | **0.7280** | +0.44% |
+| + Time Features | 0.7192 | **-0.88% (Harmful)** |
+
+*Note: Time features consistently degraded performance, justifying their removal.*
 
 ---
 
@@ -174,7 +180,7 @@ Hierarchical Voting Classifier (5 models):
 ### Exploratory Data Analysis
 See `eda.ipynb` for:
 - Full dataset cleaning journey
-- Missing value analysis (~36% timestamps missing) 
+- Missing value analysis 
 - Category distribution 
 - Source-category correlations
 - Temporal trends
@@ -189,13 +195,13 @@ python -m src.tuning --model lr   # Logistic Regression
 python -m src.tuning --model svc   # LinearSVC
 ```
 
-Bes parameters saved to `best_params.json`.
+Best parameters saved to `best_params.json`.
 
 ### Cross-Validation Report
 ```bash
 python -m src.ensemble
 ```
-Generates detailed fold-by-fold analysis in `results/ensemble_cv/cv_report.md`.
+Generates detailed fold-by-fold analysis in `results/ensemble_cv/fold_scores.json`.
 
 ---
 
@@ -208,4 +214,3 @@ Error: Dataset files not found in ./dataset/
 **Solution**: Place `development.csv` and `evaluation.csv` in `./dataset/` directory.
 
 ---
-

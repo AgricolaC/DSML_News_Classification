@@ -1,0 +1,36 @@
+{
+  "model": "svc",
+  "best_params": {
+    "clf__C": 0.1,
+    "clf__loss": "squared_hinge",
+    "clf__max_iter": 2500,
+    "clf__tol": 0.0001
+  },
+  "best_score": 0.7245557700329871,
+  "cv_results": {
+    "mean_test_score": [
+      0.6840520242721743,
+      0.6840284390093676,
+      0.7245557700329871,
+      0.7244679717614378,
+      0.7087300408794256,
+      0.7086326225198549
+    ],
+    "std_test_score": [
+      0.0015772808337062981,
+      0.0015654733868439197,
+      0.0014242439532187391,
+      0.001397725922549911,
+      0.0008793068108818593,
+      0.0008117053386846366
+    ],
+    "params": [
+      "{'clf__C': 0.01, 'clf__loss': 'squared_hinge', 'clf__max_iter': 2500, 'clf__tol': 0.0001}",
+      "{'clf__C': 0.01, 'clf__loss': 'squared_hinge', 'clf__max_iter': 2500, 'clf__tol': 0.001}",
+      "{'clf__C': 0.1, 'clf__loss': 'squared_hinge', 'clf__max_iter': 2500, 'clf__tol': 0.0001}",
+      "{'clf__C': 0.1, 'clf__loss': 'squared_hinge', 'clf__max_iter': 2500, 'clf__tol': 0.001}",
+      "{'clf__C': 1.0, 'clf__loss': 'squared_hinge', 'clf__max_iter': 2500, 'clf__tol': 0.0001}",
+      "{'clf__C': 1.0, 'clf__loss': 'squared_hinge', 'clf__max_iter': 2500, 'clf__tol': 0.001}"
+    ]
+  }
+}

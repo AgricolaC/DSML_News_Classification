@@ -1,13 +1,4 @@
 """
-Modular hyperparameter tuning script.
-
-Supports tuning for all 5 ensemble models:
-- LinearSVC (svc)
-- LogisticRegression (lr)
-- HistGradientBoostingClassifier (hgb)
-- MultinomialNB (mnb)
-- ComplementNB (cnb)
-
 Usage:
 
     If you are using a virtual environment, first run 
@@ -22,42 +13,43 @@ import numpy as np
 import json
 import argparse
 from sklearn.model_selection import GridSearchCV
-from .preprocessing import DatasetCleaner, DatasetDeduplicator, FeatureExtractor, TimeExtractor, PageRankOneHot, SourceTransformer
-from .cv_utils import AnchoredTimeSeriesSplit
+from .preprocessing import DatasetCleaner, DatasetDeduplicator, FeatureExtractor, PageRankTransformer, SourceTransformer
+from sklearn.model_selection import StratifiedGroupKFold
 from .seed import set_global_seed
 from .models import get_pipelines, load_best_params
 import os
 
 PARAM_GRIDS = {
     'svc': {
-        'clf__C': [0.01, 0.1, 1.0, 10.0],
-        'clf__max_iter': [1000, 2500]
+        'clf__C': [0.01, 0.1, 1.0],
+        'clf__loss': ['squared_hinge'],  # 'hinge' is not supported by LinearSVC with dual=False
+        'clf__tol': [1e-4, 1e-3],
+        'clf__max_iter': [2500]
     },
     'lr': {
-        'clf__C': [0.5, 1.0, 5.0],
-        'clf__max_iter': [1000, 2500]
+        'clf__C': [0.1, 1.0, 10.0],
+        'clf__max_iter': [2500]
     },
     'hgb': {
         'clf__learning_rate': [0.1],
-        'clf__max_depth': [5,10,20,None],
-        'clf__l2_regularization': [1.0, 10.0, 100.0],
-        'clf__max_leaf_nodes': [31,63]
+        'clf__max_depth': [10, 20, None],
+        'clf__l2_regularization': [1.0, 10.0],
+        'clf__max_leaf_nodes': [31, 63]
     },
     'mnb': {
-        'clf__alpha': [0.01, 0.1, 0.5, 1.0, 2.0]
+        'clf__alpha': [0.01, 0.05, 0.1, 0.5, 1.0],
+        'clf__fit_prior': [True, False]
     },
     'cnb': {
-        'clf__alpha': [0.01, 0.1, 0.5, 1.0, 2.0],
-        'clf__norm': [True, False]
+        'clf__alpha': [0.01, 0.1, 1.0],
+        'clf__norm': [True, False],
+        'clf__fit_prior': [True, False]
     }
 }
 
 def preprocess_data(df):
     """
-    Apply standard preprocessing pipeline matching ensemble.py.
-    
-    Returns:
-        X, y, timestamps
+    Apply preprocessing pipeline
     """
     print("Preprocessing data...")
     
@@ -74,16 +66,7 @@ def preprocess_data(df):
     # df = SourceTransformer(top_k=400).fit_transform(df) 
     
     # Step 5: PageRank
-    df = PageRankOneHot().transform(df)
-    
-    # Step 6: Time Features (preserve timestamp for CV)
-    timestamps = pd.to_datetime(df['timestamp'], errors='coerce')
-    df = TimeExtractor().transform(df)
-    df['timestamp'] = timestamps
-    
-    # Step 7: Strict Time Sorting for CV (Critical for AnchoredTimeSeriesSplit)
-    if 'timestamp' in df.columns:
-        df = df.sort_values(by='timestamp', na_position='first')
+    df = PageRankTransformer(mode='onehot').transform(df)
     
     # Extract target
     y = df['label']
@@ -93,17 +76,7 @@ def preprocess_data(df):
 
 def tune_model(model_name, param_grid=None, n_splits=5, n_jobs=-1, verbose=2):
     """
-    Tune hyperparameters for a specific model.
-    
-    Args:
-        model_name: One of ['svc', 'lr', 'hgb', 'mnb', 'cnb']
-        param_grid: Optional custom parameter grid (uses defaults if None)
-        n_splits: Number of CV splits
-        n_jobs: Number of parallel jobs
-        verbose: Verbosity level for GridSearchCV
-    
-    Returns:
-        dict: Best parameters and score
+    Tune hyperparameters for a specific model.       
     """
     set_global_seed(42)
     
@@ -127,7 +100,7 @@ def tune_model(model_name, param_grid=None, n_splits=5, n_jobs=-1, verbose=2):
         param_grid = PARAM_GRIDS.get(model_name, {})
     
     if not param_grid:
-        print(f"⚠️  No parameter grid defined for {model_name}. Using default parameters.")
+        print(f"No parameter grid defined for {model_name}. Using default parameters.")
         return {'model': model_name, 'best_params': {}, 'best_score': None}
     
     print(f"\nParameter Grid:")
@@ -137,7 +110,9 @@ def tune_model(model_name, param_grid=None, n_splits=5, n_jobs=-1, verbose=2):
     print(f"CV Splits: {n_splits}")
     
     # Setup CV
-    cv = AnchoredTimeSeriesSplit(X, n_splits=n_splits)
+    print(f"CV Strategy: StratifiedKFold")
+    from sklearn.model_selection import StratifiedKFold
+    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
     
     # Run GridSearch
     print(f"\nRunning GridSearchCV...")
@@ -229,7 +204,7 @@ def tune_all_models(n_splits=3):
                 'best_score': results['best_score']
             })
         except Exception as e:
-            print(f"❌ Error tuning {model_name}: {e}")
+            print(f"Error tuning {model_name}: {e}")
             results_summary.append({
                 'model': model_name,
                 'error': str(e)
